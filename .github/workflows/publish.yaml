@@ -73,7 +73,7 @@ jobs:
           echo "ref             = $GITHUB_WORKFLOW_REF"
           echo "environment     = ${{ github.environment }}"
           echo "event           = ${{ github.event_name }}"
-          echo "publisher       = $(node -p "require('vscode-extension/package.json').publisher")"
+          echo "publisher       = $(node -p "require('./package.json').publisher")"
 
       - name: Refuse to republish a version that is already live
         run: |
