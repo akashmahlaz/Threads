@@ -28,6 +28,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             localResourceRoots: [this._extensionUri],
         };
         webviewView.webview.html = this._getHtml(webviewView.webview);
+        // Opening the inbox is what starts the link in this window.
+        void this._service.start();
 
         this._disposables.push(
             webviewView.webview.onDidReceiveMessage((msg) => this._onMessage(msg)),
@@ -72,6 +74,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'close':
                     this._openChatId = undefined;
+                    this._service.closeChat();
                     break;
                 case 'send':
                     await this._send(msg);
@@ -190,6 +193,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             chatId: this._openChatId,
             chat: chat ? toWebviewChat(chat, this._service.groupMembers(chat.id)) : undefined,
             items: this._service.readChat(this._openChatId, 120).map(toWebviewMessage),
+            typing: this._service.isTyping(this._openChatId),
         });
     }
 

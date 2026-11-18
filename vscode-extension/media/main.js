@@ -30,8 +30,10 @@
             case 'messages':
                 if (openChat && msg.chatId === openChat.id) {
                     if (msg.chat) {
-                        openChat = msg.chat;
-                        renderChatHeader(msg.chat);
+                        openChat = { ...openChat, ...msg.chat };
+                        renderChatHeader(openChat, msg.typing);
+                    } else {
+                        renderChatHeader(openChat, msg.typing);
                     }
                     renderMessages(msg.items || []);
                 }
@@ -287,15 +289,18 @@
         $('msg-input').focus();
     }
 
-    function renderChatHeader(chat) {
+    function renderChatHeader(chat, typing) {
         $('chat-title').textContent = chat.name;
-        $('chat-subtitle').textContent = chat.isGroup
+        const base = chat.isGroup
             ? chat.members
                 ? `${chat.members} members`
                 : 'Group'
             : chat.id.endsWith('@lid')
               ? 'WhatsApp contact'
               : formatPhone(chat.id);
+        const subtitle = $('chat-subtitle');
+        subtitle.textContent = typing ? 'typing…' : base;
+        subtitle.classList.toggle('typing', Boolean(typing));
         $('chat-avatar').style.setProperty('--hue', hueOf(chat.id));
         $('chat-avatar').textContent = initials(chat.name);
         $('chat-avatar').classList.toggle('group', Boolean(chat.isGroup));

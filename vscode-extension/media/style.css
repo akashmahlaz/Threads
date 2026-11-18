@@ -384,11 +384,11 @@ body {
 .bubble .sender {
     font-size: 11px;
     font-weight: 600;
-    color: hsl(var(--hue, 150) 55% 60%);
+    color: hsl(var(--hue, 150) 35% 68%);
 }
 
 body.vscode-light .bubble .sender {
-    color: hsl(var(--hue, 150) 55% 32%);
+    color: hsl(var(--hue, 150) 35% 32%);
 }
 
 .bubble .text {
@@ -636,4 +636,9 @@ body.vscode-light .bubble .sender {
 /* Groups and numbers get a slightly different avatar. */
 .avatar.group {
     border-radius: 8px;
+}
+
+.chat-subtitle.typing {
+    color: var(--accent, #25d366);
+    font-style: italic;
 }

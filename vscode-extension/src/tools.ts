@@ -6,9 +6,22 @@ import { formatPhone } from './whatsapp/store';
  * Copilot tools. This is the point of the extension: the model can see who is
  * talking, what was said in which group, and reply — not just render a sidebar.
  */
-export function registerTools(context: vscode.ExtensionContext, whatsapp: WhatsAppService) {
-    context.subscriptions.push(
-        vscode.lm.registerTool<{ to: string; text: string }>('threads_whatsapp_send', {
+export function registerTools(
+    context: vscode.ExtensionContext,
+    whatsapp: WhatsAppService,
+    log: (message: string) => void = () => undefined,
+) {
+    // One broken registration must not take the other four down with it: VS
+    // Code reports the whole extension as failed otherwise.
+    const register = <T>(name: string, tool: vscode.LanguageModelTool<T>): void => {
+        try {
+            context.subscriptions.push(vscode.lm.registerTool<T>(name, tool));
+        } catch (err) {
+            log(`Could not register ${name}: ${err instanceof Error ? err.message : err}`);
+        }
+    };
+
+    register<{ to: string; text: string }>('threads_whatsapp_send', {
             invoke: async (options) => {
                 const { to, text } = options.input;
                 try {
@@ -18,9 +31,9 @@ export function registerTools(context: vscode.ExtensionContext, whatsapp: WhatsA
                     return textResult(`Could not send: ${errorMessage(err)}`);
                 }
             },
-        }),
+        });
 
-        vscode.lm.registerTool<{ limit?: number }>('threads_whatsapp_list_chats', {
+    register<{ limit?: number }>('threads_whatsapp_list_chats', {
             invoke: async (options) => {
                 const limit = clamp(options.input.limit, 200);
                 const chats = whatsapp.listChats({ includeArchived: true }).slice(0, limit);
@@ -42,9 +55,9 @@ export function registerTools(context: vscode.ExtensionContext, whatsapp: WhatsA
                 });
                 return textResult(lines.join('\n'));
             },
-        }),
+        });
 
-        vscode.lm.registerTool<{ chat_id: string; limit?: number }>('threads_whatsapp_read_chat', {
+    register<{ chat_id: string; limit?: number }>('threads_whatsapp_read_chat', {
             invoke: async (options) => {
                 const { chat_id } = options.input;
                 const chat = whatsapp.listChats({ includeArchived: true }).find((c) => c.id === chat_id);
@@ -66,9 +79,9 @@ export function registerTools(context: vscode.ExtensionContext, whatsapp: WhatsA
                 });
                 return textResult(`${header}\n${lines.join('\n')}`);
             },
-        }),
+        });
 
-        vscode.lm.registerTool<{ query: string; limit?: number }>('threads_whatsapp_search', {
+    register<{ query: string; limit?: number }>('threads_whatsapp_search', {
             invoke: async (options) => {
                 const query = options.input.query?.trim();
                 if (!query) return textResult('Missing search query.');
@@ -83,9 +96,9 @@ export function registerTools(context: vscode.ExtensionContext, whatsapp: WhatsA
                         .join('\n'),
                 );
             },
-        }),
+        });
 
-        vscode.lm.registerTool('threads_whatsapp_groups', {
+    register<{ limit?: number }>('threads_whatsapp_groups', {
             invoke: async () => {
                 const groups = whatsapp.listGroups();
                 if (!groups.length) return textResult(emptyInbox(whatsapp));
@@ -97,8 +110,31 @@ export function registerTools(context: vscode.ExtensionContext, whatsapp: WhatsA
                 });
                 return textResult(lines.join('\n'));
             },
-        }),
-    );
+        });
+
+    register('threads_whatsapp_status', {
+        invoke: async () => {
+            const status = whatsapp.getStatus();
+            const state =
+                status.state === 'qr'
+                    ? 'waiting for a QR scan'
+                    : status.state === 'starting'
+                      ? 'starting'
+                      : status.state;
+            return textResult(
+                [
+                    `WhatsApp: ${state}`,
+                    status.account ? `Account: +${status.account}` : 'Account: not linked',
+                    `Stored chats: ${status.chatCount}`,
+                    `Groups: ${whatsapp.listGroups().length}`,
+                    status.syncing ? 'History import: in progress' : 'History import: idle',
+                    status.error ? `Last error: ${status.error}` : '',
+                ]
+                    .filter(Boolean)
+                    .join('\n'),
+            );
+        },
+    });
 }
 
 function emptyInbox(whatsapp: WhatsAppService): string {

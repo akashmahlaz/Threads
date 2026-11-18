@@ -2,8 +2,8 @@
   "name": "threads",
   "displayName": "Threads",
   "description": "WhatsApp in your sidebar \u2014 chats, groups and contacts, with native Copilot tools",
-  "version": "0.4.0",
-  "publisher": "threads",
+  "version": "0.4.1",
+  "publisher": "Akash Mahla",
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -14,13 +14,16 @@
     "onStartupFinished",
     "onView:threads.sidebar",
     "onCommand:threads.startWhatsApp",
+    "onCommand:threads.stopWhatsApp",
     "onCommand:threads.logoutWhatsApp",
     "onCommand:threads.checkCopilot",
+    "onCommand:threads.openLogs",
     "onLanguageModelTool:threads_whatsapp_send",
     "onLanguageModelTool:threads_whatsapp_list_chats",
     "onLanguageModelTool:threads_whatsapp_read_chat",
     "onLanguageModelTool:threads_whatsapp_search",
-    "onLanguageModelTool:threads_whatsapp_groups"
+    "onLanguageModelTool:threads_whatsapp_groups",
+    "onLanguageModelTool:threads_whatsapp_status"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -114,12 +117,14 @@
             "to",
             "text"
           ]
-        }
+        },
+        "toolReferenceName": "whatsappSend",
+        "canBeReferencedInPrompt": true
       },
       {
         "name": "threads_whatsapp_list_chats",
         "displayName": "List WhatsApp Chats",
-        "modelDescription": "List WhatsApp conversations (direct chats and groups) with id, last message, unread count and last activity.",
+        "modelDescription": "List the user's WhatsApp conversations (direct chats and groups) with id, last message, unread count and last activity. Start here for any question about the user's WhatsApp messages.",
         "icon": "media/icon.svg",
         "tags": [
           "whatsapp",
@@ -133,7 +138,9 @@
               "description": "Maximum chats to return (default 50, max 200)"
             }
           }
-        }
+        },
+        "toolReferenceName": "whatsappChats",
+        "canBeReferencedInPrompt": true
       },
       {
         "name": "threads_whatsapp_read_chat",
@@ -159,7 +166,9 @@
           "required": [
             "chat_id"
           ]
-        }
+        },
+        "toolReferenceName": "whatsappRead",
+        "canBeReferencedInPrompt": true
       },
       {
         "name": "threads_whatsapp_search",
@@ -185,7 +194,9 @@
           "required": [
             "query"
           ]
-        }
+        },
+        "toolReferenceName": "whatsappSearch",
+        "canBeReferencedInPrompt": true
       },
       {
         "name": "threads_whatsapp_groups",
@@ -196,6 +207,24 @@
           "whatsapp",
           "groups"
         ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "toolReferenceName": "whatsappGroups",
+        "canBeReferencedInPrompt": true
+      },
+      {
+        "name": "threads_whatsapp_status",
+        "displayName": "WhatsApp Connection Status",
+        "modelDescription": "Check whether WhatsApp is linked in this window, which account is signed in, how many chats and groups are stored, and whether history is still importing. Call this before telling the user WhatsApp is unavailable.",
+        "icon": "media/icon.svg",
+        "tags": [
+          "whatsapp",
+          "status"
+        ],
+        "toolReferenceName": "whatsappStatus",
+        "canBeReferencedInPrompt": true,
         "inputSchema": {
           "type": "object",
           "properties": {}

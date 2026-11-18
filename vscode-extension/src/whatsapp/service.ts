@@ -60,7 +60,11 @@ export class WhatsAppService {
     private reconnectAttempts = 0;
     private reconnectTimer?: NodeJS.Timeout;
     private lidTimer?: NodeJS.Timeout;
+    private keepAliveTimer?: NodeJS.Timeout;
+    private typingSweep?: NodeJS.Timeout;
     private openChatId?: string;
+    /** chatId -> epoch ms at which a "typing" signal stops counting. */
+    private readonly typing = new Map<string, number>();
     /** Recent raw messages, served to Baileys for retries and edits. */
     private readonly rawCache = new Map<string, WAMessage>();
 
@@ -151,6 +155,9 @@ export class WhatsAppService {
     async stop(): Promise<void> {
         this.intentionalClose = true;
         this.clearReconnect();
+        if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
+        this.keepAliveTimer = undefined;
+        this.typing.clear();
         const sock = this.sock;
         this.sock = undefined;
         try {
@@ -170,6 +177,8 @@ export class WhatsAppService {
     dispose(): void {
         this.disposed = true;
         if (this.lidTimer) clearTimeout(this.lidTimer);
+        if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
+        if (this.typingSweep) clearInterval(this.typingSweep);
         void this.stop();
         this._onDidChange.clear();
         this._onInboxChange.clear();
@@ -182,9 +191,10 @@ export class WhatsAppService {
      * failed, so the sidebar never feels like it swallowed the message.
      */
     async send(to: string, text: string): Promise<void> {
-        const sock = this.ensureSocket();
         const body = text.trim();
         if (!body) throw new Error('Message text is empty');
+        await this.waitUntilConnected();
+        const sock = this.ensureSocket();
 
         const jid = await this.resolveJid(sock, to);
         const chatId = this.store.canonicalJid(jid);
@@ -244,9 +254,46 @@ export class WhatsAppService {
         return chatId;
     }
 
+    /**
+     * Connect on demand (tool calls, sending) and wait for the link to open.
+     * The socket is not opened at window startup, so two windows never fight
+     * over one WhatsApp session.
+     */
+    async waitUntilConnected(timeoutMs = 25_000): Promise<void> {
+        if (this.isConnected()) return;
+        await this.start();
+
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (this.isConnected()) return;
+            if (this.status.state === 'error') {
+                throw new Error(this.status.error ?? 'WhatsApp could not connect.');
+            }
+            if (this.status.state === 'qr') {
+                throw new Error(
+                    'WhatsApp is not linked yet. Scan the QR code in the Threads sidebar ' +
+                        '(activity bar → Threads), then try again.',
+                );
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        throw new Error('WhatsApp did not connect in time. Open the Threads sidebar to check the link.');
+    }
+
+    /** True while the other side is typing in this chat. */
+    isTyping(chatId: string): boolean {
+        const until = this.typing.get(chatId);
+        return Boolean(until && until > Date.now());
+    }
+
     /** True when this chat has no stored messages, used by the empty state. */
     hasMessages(chatId: string): boolean {
         return this.store.listMessages(chatId, 1).length > 0;
+    }
+
+    /** The user left the conversation: stop auto-reading its messages. */
+    closeChat(): void {
+        this.openChatId = undefined;
     }
 
     /** The user opened a chat: clear the badge and send read receipts. */
@@ -307,6 +354,7 @@ export class WhatsAppService {
         sock.ev.on('messages.update', (updates) => this.onMessageUpdates(updates));
         sock.ev.on('messages.delete', (payload) => this.onMessagesDeleted(payload));
         sock.ev.on('message-receipt.update', (updates) => this.onReceipts(updates));
+        sock.ev.on('presence.update', (payload) => this.onPresence(payload));
         sock.ev.on('messaging-history.set', (payload) => this.onHistory(payload));
         sock.ev.on('messaging-history.status', (payload) => {
             this.log(`History sync ${payload.syncType}: ${payload.status}`);
@@ -341,6 +389,7 @@ export class WhatsAppService {
             this.fireInbox();
         });
 
+        this.startKeepAlive();
         this.log(`Socket created (auth ${this.authDir})`);
     }
 
@@ -376,6 +425,18 @@ export class WhatsAppService {
         const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)
             ?.output?.statusCode;
         if (this.intentionalClose) return;
+
+        if (statusCode === DisconnectReason.connectionReplaced) {
+            this.log('Another window took over this WhatsApp session; staying offline here');
+            this.setState({
+                state: 'error',
+                qrDataUrl: null,
+                account: null,
+                error: 'WhatsApp is linked in another VS Code window. Use that window, or reload this one.',
+                syncing: false,
+            });
+            return;
+        }
 
         if (statusCode === DisconnectReason.loggedOut) {
             this.log('This computer was unlinked from WhatsApp; pairing again');
@@ -443,6 +504,7 @@ export class WhatsAppService {
                 named.push({ id: record.senderId, notify: raw.pushName });
             }
 
+            if (this.typing.delete(record.chatId)) changed = true;
             if (this.store.applyMessage(record)) changed = true;
             if (!record.isMe && record.chatId === this.openChatId) {
                 this.store.clearUnread(record.chatId);
@@ -455,6 +517,58 @@ export class WhatsAppService {
             changed = true;
         }
         if (changed) this.fireInbox();
+    }
+
+    /** "typing…" signals from the other side of a conversation. */
+    private onPresence(payload: {
+        id: string;
+        presences: Record<string, { lastKnownPresence?: string | null }>;
+    }): void {
+        const chatId = this.store.canonicalJid(payload.id);
+        const composing = Object.values(payload.presences ?? {}).some(
+            (presence) => presence.lastKnownPresence === 'composing',
+        );
+        if (composing) {
+            this.typing.set(chatId, Date.now() + 12_000);
+            this.fireInbox();
+            return;
+        }
+        if (this.typing.delete(chatId)) this.fireInbox();
+    }
+
+    /**
+     * A laptop that sleeps can leave a socket that looks open but is dead.
+     * This notices and reconnects, so messages start arriving again without a
+     * window reload.
+     */
+    private startKeepAlive(): void {
+        if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
+        if (!this.typingSweep) {
+            this.typingSweep = setInterval(() => {
+                let changed = false;
+                for (const [chatId, until] of [...this.typing]) {
+                    if (until <= Date.now()) {
+                        this.typing.delete(chatId);
+                        changed = true;
+                    }
+                }
+                if (changed) this.fireInbox();
+            }, 5_000);
+        }
+        this.keepAliveTimer = setInterval(() => this.checkSocket(), 45_000);
+    }
+
+    private checkSocket(): void {
+        if (this.disposed || this.intentionalClose || this.reconnectTimer) return;
+        const sock = this.sock;
+        if (!sock) return;
+        const ws = (sock as unknown as { ws?: { isOpen?: boolean; isClosed?: boolean } }).ws;
+        if (ws && (ws.isOpen === false || ws.isClosed === true)) {
+            this.log('Socket stopped responding; reconnecting');
+            this.sock = undefined;
+            this.setState({ state: 'disconnected', account: null, qrDataUrl: null, syncing: false });
+            this.scheduleReconnect();
+        }
     }
 
     /** Edits, deletions and delivery-status changes for existing messages. */

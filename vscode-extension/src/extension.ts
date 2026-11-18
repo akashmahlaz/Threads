@@ -75,7 +75,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }),
     );
 
-    registerTools(context, service);
+    registerTools(context, service, log);
 
     // A linked device only receives history at link time. If this computer is
     // connected but the inbox is empty, offer the one thing that fixes it.
@@ -98,8 +98,28 @@ export async function activate(context: vscode.ExtensionContext) {
         }),
     );
 
-    // Pairing starts on activation so the tools work before the sidebar opens.
-    void service.start();
+    // A tiny status-bar entry makes new messages visible outside the sidebar.
+    const badge = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    badge.command = 'threads.sidebar.focus';
+    badge.name = 'Threads WhatsApp';
+    context.subscriptions.push(badge);
+
+    const refreshBadge = () => {
+        const unread = service
+            .listChats({ includeArchived: false })
+            .reduce((total, chat) => total + chat.unread, 0);
+        if (!service.isConnected() || unread <= 0) {
+            badge.hide();
+            return;
+        }
+        badge.text = `$(comment-discussion) WhatsApp ${unread}`;
+        badge.tooltip = `${unread} unread WhatsApp message${unread === 1 ? '' : 's'}`;
+        badge.show();
+    };
+    context.subscriptions.push(service.onInboxChange(refreshBadge), service.onDidChange(refreshBadge));
+
+    // The link is opened by the sidebar or by the first tool call, so several
+    // VS Code windows cannot fight over one WhatsApp session.
     log(`Threads activated (store ${storage})`);
 }
 
