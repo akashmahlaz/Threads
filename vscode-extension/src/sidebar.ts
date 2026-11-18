@@ -8,7 +8,8 @@ import type { ChatRecord, MessageRecord } from './whatsapp/types';
  * The webview has no network and no socket access. The extension host pushes
  * the pairing state (QR rendered to a PNG data URL — `qrcode` is Node-only and
  * the webview CSP blocks it), the chat list, the open conversation and search
- * results.
+ * results. Media and avatars are downloaded by the host and handed over as
+ * `webview://` URLs, because the page cannot fetch `mmg.whatsapp.net` itself.
  */
 export class SidebarProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
@@ -88,6 +89,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'search':
                     this._search(String(msg.query ?? ''));
                     break;
+                case 'mute':
+                    if (msg.chatId) this._service.setMuted(msg.chatId, Boolean(msg.muted));
+                    break;
+                case 'pin':
+                    if (msg.chatId) this._service.setPinned(msg.chatId, Boolean(msg.pinned));
+                    break;
+                case 'load-media':
+                    if (msg.chatId && msg.id) await this._service.loadMedia(msg.chatId, msg.id);
+                    break;
+                case 'avatars':
+                    // The list asked for profile pictures; fill in the blanks.
+                    void this._service.loadAvatars().then(() => this._pushInbox());
+                    break;
             }
         } catch (err) {
             this._error(String(err instanceof Error ? err.message : err));
@@ -121,10 +135,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _send(msg: { to?: string; text?: string }): Promise<void> {
+    private async _send(msg: { to?: string; text?: string; replyTo?: string }): Promise<void> {
         if (!msg.to || !msg.text) return;
         try {
-            await this._service.send(msg.to, msg.text);
+            await this._service.send(msg.to, msg.text, msg.replyTo);
         } catch (err) {
             this._sendFailed(msg.to, String(err instanceof Error ? err.message : err));
         }
@@ -175,9 +189,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         view.webview.postMessage({
             type: 'chats',
-            items: this._service
-                .listChats({ includeArchived: true })
-                .map((chat) => toWebviewChat(chat, this._service.groupMembers(chat.id))),
+            items: this._service.listChats({ includeArchived: true }).map((chat) =>
+                toWebviewChat(chat, this._service.groupMembers(chat.id), view.webview, this._service.isTyping(chat.id)),
+            ),
         });
 
         if (this._openChatId) this._pushMessages();
@@ -191,8 +205,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this._view?.webview.postMessage({
             type: 'messages',
             chatId: this._openChatId,
-            chat: chat ? toWebviewChat(chat, this._service.groupMembers(chat.id)) : undefined,
-            items: this._service.readChat(this._openChatId, 120).map(toWebviewMessage),
+            chat: chat
+                ? toWebviewChat(chat, this._service.groupMembers(chat.id), this._view?.webview)
+                : undefined,
+            items: this._service
+                .readChat(this._openChatId, 200)
+                .map((message) => toWebviewMessage(message, this._view?.webview)),
             typing: this._service.isTyping(this._openChatId),
         });
     }
@@ -223,7 +241,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} data:; media-src ${webview.cspSource};">
     <link href="${styleUri}" rel="stylesheet">
     <title>Threads</title>
 </head>
@@ -266,8 +284,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     <span id="chat-title" class="chat-title"></span>
                     <span id="chat-subtitle" class="chat-subtitle"></span>
                 </span>
+                <button id="mute-btn" class="icon-btn" title="Mute" aria-label="Mute" aria-pressed="false">🔇</button>
             </header>
             <div id="messages" class="messages" role="log"></div>
+            <div id="reply-bar" class="reply-bar hidden">
+                <span class="reply-body">
+                    <span id="reply-who" class="reply-who"></span>
+                    <span id="reply-what" class="reply-what"></span>
+                </span>
+                <button id="reply-cancel" class="icon-btn" title="Cancel reply" aria-label="Cancel reply">&#215;</button>
+            </div>
             <div class="composer">
                 <textarea id="msg-input" rows="1" placeholder="Message" aria-label="Message"></textarea>
                 <button id="send-btn" class="btn primary" title="Send">Send</button>
@@ -282,7 +308,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 }
 
-function toWebviewChat(chat: ChatRecord, members: number) {
+function toWebviewChat(
+    chat: ChatRecord,
+    members: number,
+    webview?: vscode.Webview,
+    typing = false,
+) {
     return {
         id: chat.id,
         name: chat.name,
@@ -294,10 +325,15 @@ function toWebviewChat(chat: ChatRecord, members: number) {
         unread: chat.unread,
         muted: chat.muted,
         archived: chat.archived,
+        pinned: Boolean(chat.pinned),
+        online: Boolean(chat.online),
+        typing,
+        lastSeen: chat.lastSeen ?? 0,
+        avatar: resourceUrl(webview, chat.avatar),
     };
 }
 
-function toWebviewMessage(message: MessageRecord) {
+function toWebviewMessage(message: MessageRecord, webview?: vscode.Webview) {
     return {
         id: message.id,
         text: message.text,
@@ -306,11 +342,30 @@ function toWebviewMessage(message: MessageRecord) {
         sender: message.isMe ? '' : message.senderName,
         timestamp: message.timestamp,
         quoted: message.quoted,
-        media: message.media,
+        media: message.media
+            ? {
+                  mimetype: message.media.mimetype,
+                  fileName: message.media.fileName,
+                  seconds: message.media.seconds,
+                  width: message.media.width,
+                  height: message.media.height,
+                  failed: message.media.failed,
+                  url: resourceUrl(webview, message.media.file),
+              }
+            : undefined,
         status: message.status,
         edited: message.edited,
         deleted: message.deleted,
+        forwarded: message.forwarded,
+        reactions: message.reactions,
+        poll: message.poll,
     };
+}
+
+/** Turn a downloaded file into something the webview is allowed to load. */
+function resourceUrl(webview: vscode.Webview | undefined, file?: string): string | undefined {
+    if (!webview || !file) return undefined;
+    return webview.asWebviewUri(vscode.Uri.file(file)).toString();
 }
 
 function getNonce(): string {

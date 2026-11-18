@@ -2,13 +2,29 @@
   "name": "threads",
   "displayName": "Threads",
   "description": "WhatsApp in your sidebar \u2014 chats, groups and contacts, with native Copilot tools",
-  "version": "0.4.1",
-  "publisher": "Akash Mahla",
+  "version": "0.5.0",
+  "publisher": "akashmahlaz",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akashmahlaz/Threads.git"
+  },
+  "bugs": {
+    "url": "https://github.com/akashmahlaz/Threads/issues"
+  },
+  "homepage": "https://github.com/akashmahlaz/Threads#readme",
   "engines": {
     "vscode": "^1.96.0"
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "whatsapp",
+    "chat",
+    "messaging",
+    "copilot"
   ],
   "activationEvents": [
     "onStartupFinished",
@@ -18,12 +34,15 @@
     "onCommand:threads.logoutWhatsApp",
     "onCommand:threads.checkCopilot",
     "onCommand:threads.openLogs",
+    "onCommand:threads.testSound",
     "onLanguageModelTool:threads_whatsapp_send",
     "onLanguageModelTool:threads_whatsapp_list_chats",
     "onLanguageModelTool:threads_whatsapp_read_chat",
     "onLanguageModelTool:threads_whatsapp_search",
     "onLanguageModelTool:threads_whatsapp_groups",
-    "onLanguageModelTool:threads_whatsapp_status"
+    "onLanguageModelTool:threads_whatsapp_status",
+    "onLanguageModelTool:threads_whatsapp_mute",
+    "onLanguageModelTool:threads_whatsapp_get_media"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -70,6 +89,16 @@
         "command": "threads.checkCopilot",
         "title": "Check Copilot Tools",
         "category": "Threads"
+      },
+      {
+        "command": "threads.testSound",
+        "title": "Play Notification Sound",
+        "category": "Threads"
+      },
+      {
+        "command": "threads.openChat",
+        "title": "Open Chat",
+        "category": "Threads"
       }
     ],
     "menus": {
@@ -89,7 +118,33 @@
           "when": "view == threads.sidebar",
           "group": "navigation"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "threads.openChat",
+          "when": "false"
+        }
       ]
+    },
+    "configuration": {
+      "title": "Threads",
+      "properties": {
+        "threads.notifications.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a VS Code notification when a WhatsApp message arrives in a chat you are not looking at."
+        },
+        "threads.notifications.sound": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a short chime when a WhatsApp message arrives. Muted chats stay silent."
+        },
+        "threads.notifications.showPreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include the message text in the notification. Turn this off on a shared screen."
+        }
+      }
     },
     "languageModelTools": [
       {
@@ -145,7 +200,7 @@
       {
         "name": "threads_whatsapp_read_chat",
         "displayName": "Read WhatsApp Chat",
-        "modelDescription": "Read stored messages from one WhatsApp conversation, oldest first, including sender names and quoted replies.",
+        "modelDescription": "Read stored messages from one WhatsApp conversation, oldest first, including sender names, quoted replies, reactions and poll options.",
         "icon": "media/icon.svg",
         "tags": [
           "whatsapp",
@@ -160,7 +215,7 @@
             },
             "limit": {
               "type": "number",
-              "description": "How many recent messages to return (default 50, max 120)"
+              "description": "How many recent messages to return (default 50, max 200)"
             }
           },
           "required": [
@@ -229,6 +284,63 @@
           "type": "object",
           "properties": {}
         }
+      },
+      {
+        "name": "threads_whatsapp_mute",
+        "displayName": "Mute or Unmute a WhatsApp Chat",
+        "modelDescription": "Mute or unmute one WhatsApp conversation. A muted chat does not play a sound or show a notification.",
+        "icon": "media/icon.svg",
+        "tags": [
+          "whatsapp",
+          "settings"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string",
+              "description": "Chat id from threads_whatsapp_list_chats"
+            },
+            "muted": {
+              "type": "boolean",
+              "description": "True to mute, false to unmute. Defaults to the opposite of the current state."
+            }
+          },
+          "required": [
+            "chat_id"
+          ]
+        },
+        "toolReferenceName": "whatsappMute",
+        "canBeReferencedInPrompt": true
+      },
+      {
+        "name": "threads_whatsapp_get_media",
+        "displayName": "Download WhatsApp Media",
+        "modelDescription": "Download the photo, video, voice note or document attached to a stored message and return the local file path. Use when the user asks to see or open an attachment.",
+        "icon": "media/icon.svg",
+        "tags": [
+          "whatsapp",
+          "media"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string",
+              "description": "Chat id from threads_whatsapp_list_chats"
+            },
+            "message_id": {
+              "type": "string",
+              "description": "Message id from threads_whatsapp_read_chat"
+            }
+          },
+          "required": [
+            "chat_id",
+            "message_id"
+          ]
+        },
+        "toolReferenceName": "whatsappMedia",
+        "canBeReferencedInPrompt": true
       }
     ]
   },
@@ -236,17 +348,34 @@
     "vscode:prepublish": "npm run build",
     "compile": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
     "build": "npm run compile",
-    "watch": "npm run compile -- --watch"
+    "watch": "npm run compile -- --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22",
     "@types/vscode": "^1.96.0",
     "esbuild": "^0.25",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "@types/qrcode": "^1.5.6",
     "baileys": "^7.0.0-rc14",
     "qrcode": "^1.5.4"
+  },
+  "author": {
+    "name": "Akash Mahla",
+    "email": "akashdalla406@gmail.com",
+    "url": "https://linkedin.com/in/akashmahlax"
+  },
+  "credits": {
+    "name": "Akash Mahla",
+    "email": "akashdalla406@gmail.com",
+    "url": "https://github.com/akashmahlaz"
+  },
+  "galleryBanner": {
+    "color": "#128C7E",
+    "theme": "dark"
   }
 }

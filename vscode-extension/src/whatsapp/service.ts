@@ -4,6 +4,7 @@ import makeWASocket, {
     Browsers,
     DisconnectReason,
     fetchLatestBaileysVersion,
+    fetchLatestWaWebVersion,
     jidNormalizedUser,
     makeCacheableSignalKeyStore,
     useMultiFileAuthState,
@@ -11,13 +12,16 @@ import makeWASocket, {
     type ConnectionState,
     type Contact as WAContact,
     type GroupMetadata,
+    type WACallEvent,
     type WAMessage,
     type WAMessageUpdate,
     type WASocket,
 } from 'baileys';
 import { extractMessage, isSupportedChat } from './extract';
+import { MediaCache } from './media';
+import { SoundPlayer, type SoundName } from './sound';
 import type { WhatsAppStore } from './store';
-import type { ChatRecord, GroupRecord, MessageRecord } from './types';
+import type { ChatRecord, GroupRecord, MessageRecord, ReactionRecord } from './types';
 
 export type WhatsAppState = 'starting' | 'qr' | 'connected' | 'disconnected' | 'error';
 
@@ -33,7 +37,15 @@ export interface WhatsAppStatus {
     chatCount: number;
 }
 
-const MAX_RECONNECTS = 6;
+/** What a new message should do, decided by the caller (settings + mute state). */
+export interface AlertOptions {
+    sound: boolean;
+    notification: boolean;
+}
+
+const MAX_RECONNECTS = 8;
+/** How many LID chats to resolve per pass. */
+const LID_BATCH = 200;
 
 /**
  * WhatsApp over Baileys, driven from the extension host.
@@ -62,20 +74,34 @@ export class WhatsAppService {
     private lidTimer?: NodeJS.Timeout;
     private keepAliveTimer?: NodeJS.Timeout;
     private typingSweep?: NodeJS.Timeout;
+    private mediaTimer?: NodeJS.Timeout;
     private openChatId?: string;
     /** chatId -> epoch ms at which a "typing" signal stops counting. */
     private readonly typing = new Map<string, number>();
     /** Recent raw messages, served to Baileys for retries and edits. */
     private readonly rawCache = new Map<string, WAMessage>();
+    /** Messages whose media still needs downloading. */
+    private readonly mediaQueue: Array<{ raw: WAMessage; record: MessageRecord }> = [];
+    private mediaDraining = false;
 
     private readonly _onDidChange = new Set<(status: WhatsAppStatus) => void>();
     private readonly _onInboxChange = new Set<() => void>();
+    /** Fired when a message arrives that the user did not send. */
+    private readonly _onIncoming = new Set<(message: MessageRecord, chat: ChatRecord) => void>();
+
+    readonly media: MediaCache;
+    private readonly sound: SoundPlayer;
 
     constructor(
         private readonly authDir: string,
         readonly store: WhatsAppStore,
         private readonly log: (message: string) => void = () => undefined,
-    ) {}
+        mediaDir?: string,
+        soundDir?: string,
+    ) {
+        this.media = new MediaCache(mediaDir ?? `${authDir}-media`, log);
+        this.sound = new SoundPlayer(soundDir ?? `${authDir}-sounds`, log);
+    }
 
     // ── public surface ──────────────────────────────────────────────────────
 
@@ -97,11 +123,17 @@ export class WhatsAppService {
         return { dispose: () => this._onInboxChange.delete(listener) };
     }
 
+    /** Fired for every incoming (not self) message, for sounds and notifications. */
+    onIncoming(listener: (message: MessageRecord, chat: ChatRecord) => void): { dispose(): void } {
+        this._onIncoming.add(listener);
+        return { dispose: () => this._onIncoming.delete(listener) };
+    }
+
     listChats(options: { includeArchived?: boolean; groupsOnly?: boolean } = {}): ChatRecord[] {
         return this.store.listChats(options);
     }
 
-    readChat(chatId: string, limit = 50): MessageRecord[] {
+    readChat(chatId: string, limit = 80): MessageRecord[] {
         return this.store.listMessages(chatId, limit);
     }
 
@@ -115,6 +147,32 @@ export class WhatsAppService {
 
     search(query: string, limit = 50): Array<{ chat: ChatRecord; message: MessageRecord }> {
         return this.store.search(query, limit);
+    }
+
+    /** Play a chime through the OS, honouring the mute state of that chat. */
+    playSound(kind: SoundName = 'message', chatId?: string): void {
+        if (chatId) {
+            const chat = this.store.getChat(chatId);
+            if (chat?.muted) return;
+        }
+        this.sound.play(kind);
+    }
+
+    /** Download a message's media on demand (a click in the sidebar). */
+    async loadMedia(chatId: string, messageId: string): Promise<string | undefined> {
+        const record = this.store.listMessages(chatId, 400).find((m) => m.id === messageId);
+        if (!record) return undefined;
+        const raw = this.rawCache.get(messageId);
+        if (!raw) return undefined;
+        const file = await this.media.ensure(raw, record);
+        if (file) {
+            this.store.updateMessage(chatId, messageId, { media: { ...record.media, file, failed: false } });
+            this.fireInbox();
+        } else {
+            this.store.updateMessage(chatId, messageId, { media: { ...record.media, failed: true } });
+            this.fireInbox();
+        }
+        return file;
     }
 
     async start(): Promise<void> {
@@ -179,9 +237,11 @@ export class WhatsAppService {
         if (this.lidTimer) clearTimeout(this.lidTimer);
         if (this.keepAliveTimer) clearInterval(this.keepAliveTimer);
         if (this.typingSweep) clearInterval(this.typingSweep);
+        if (this.mediaTimer) clearTimeout(this.mediaTimer);
         void this.stop();
         this._onDidChange.clear();
         this._onInboxChange.clear();
+        this._onIncoming.clear();
     }
 
     /**
@@ -190,7 +250,7 @@ export class WhatsAppService {
      * The message appears immediately with a pending tick, then becomes sent or
      * failed, so the sidebar never feels like it swallowed the message.
      */
-    async send(to: string, text: string): Promise<void> {
+    async send(to: string, text: string, replyToId?: string): Promise<void> {
         const body = text.trim();
         if (!body) throw new Error('Message text is empty');
         await this.waitUntilConnected();
@@ -199,6 +259,10 @@ export class WhatsAppService {
         const jid = await this.resolveJid(sock, to);
         const chatId = this.store.canonicalJid(jid);
         const pendingId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        // Quoting a message means attaching its text and sender to the
+        // outgoing message, which is what WhatsApp shows above the bubble.
+        const quoted = replyToId ? this.quoteFor(chatId, replyToId) : undefined;
 
         this.store.upsertChat({ id: chatId });
         this.store.applyMessage({
@@ -211,12 +275,28 @@ export class WhatsAppService {
             isMe: true,
             timestamp: Date.now(),
             status: 'pending',
+            quoted,
         });
         this.fireInbox();
 
         let sent: WAMessage | undefined;
         try {
-            sent = await sock.sendMessage(jid, { text: body });
+            sent = await sock.sendMessage(jid, {
+                text: body,
+                // Quoting is a contextInfo block naming the original sender
+                // and carrying the original message.
+                ...(quoted
+                    ? {
+                          contextInfo: {
+                              stanzaId: replyToId,
+                              participant: quoted.senderId,
+                              quotedMessage: this.rawFor(chatId, replyToId!)?.message ?? {
+                                  conversation: quoted.text,
+                              },
+                          },
+                      }
+                    : {}),
+            });
         } catch (err) {
             this.store.updateMessage(chatId, pendingId, { status: 'failed' });
             this.fireInbox();
@@ -233,10 +313,27 @@ export class WhatsAppService {
         this.fireInbox();
     }
 
+    /** The stored text and sender for a message being replied to. */
+    private quoteFor(chatId: string, messageId: string): MessageRecord['quoted'] | undefined {
+        const message = this.store.listMessages(chatId, 400).find((m) => m.id === messageId);
+        if (!message) return undefined;
+        return {
+            text: message.text,
+            senderName: message.isMe ? 'You' : message.senderName,
+            senderId: message.senderId,
+        };
+    }
+
+    /** The raw Baileys message for a reply, when we still have it cached. */
+    private rawFor(chatId: string, messageId: string): WAMessage | undefined {
+        void chatId;
+        return this.rawCache.get(messageId);
+    }
+
     /** Resend a message that failed to go out. */
     async retry(chatId: string, messageId: string): Promise<void> {
         const message = this.store
-            .listMessages(chatId, 200)
+            .listMessages(chatId, 400)
             .find((candidate) => candidate.id === messageId);
         if (!message) return;
         this.store.removeMessage(chatId, messageId);
@@ -252,6 +349,18 @@ export class WhatsAppService {
         this.store.upsertChat({ id: chatId, name: this.store.nameFor(chatId) });
         this.fireInbox();
         return chatId;
+    }
+
+    /** Toggle a chat's mute flag from the sidebar. */
+    setMuted(chatId: string, muted: boolean): void {
+        if (!this.store.setMuted(chatId, muted)) return;
+        this.fireInbox();
+    }
+
+    /** Pin or unpin a chat. */
+    setPinned(chatId: string, pinned: boolean): void {
+        if (!this.store.setPinned(chatId, pinned)) return;
+        this.fireInbox();
     }
 
     /**
@@ -296,6 +405,11 @@ export class WhatsAppService {
         this.openChatId = undefined;
     }
 
+    /** The chat the user is currently looking at, if any. */
+    currentChatId(): string | undefined {
+        return this.openChatId;
+    }
+
     /** The user opened a chat: clear the badge and send read receipts. */
     async openChat(chatId: string): Promise<void> {
         this.openChatId = chatId;
@@ -326,7 +440,7 @@ export class WhatsAppService {
 
         fs.mkdirSync(this.authDir, { recursive: true });
         const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
-        const { version } = await fetchLatestBaileysVersion();
+        const version = await this.resolveVersion();
 
         this.intentionalClose = false;
         const sock = makeWASocket({
@@ -341,6 +455,10 @@ export class WhatsAppService {
             syncFullHistory: true,
             shouldSyncHistoryMessage: () => true,
             generateHighQualityLinkPreview: false,
+            // Status broadcasts, newsletters and the "message yourself" chat
+            // are not conversations; dropping them at the socket saves the
+            // inbox from having to filter them out of every event.
+            shouldIgnoreJid: (jid) => !isSupportedChat(jid),
             getMessage: async (key) => {
                 const cached = key.id ? this.rawCache.get(key.id) : undefined;
                 return cached?.message ?? undefined;
@@ -353,6 +471,7 @@ export class WhatsAppService {
         sock.ev.on('messages.upsert', (payload) => this.onMessages(payload));
         sock.ev.on('messages.update', (updates) => this.onMessageUpdates(updates));
         sock.ev.on('messages.delete', (payload) => this.onMessagesDeleted(payload));
+        sock.ev.on('messages.reaction', (updates) => this.onReactions(updates));
         sock.ev.on('message-receipt.update', (updates) => this.onReceipts(updates));
         sock.ev.on('presence.update', (payload) => this.onPresence(payload));
         sock.ev.on('messaging-history.set', (payload) => this.onHistory(payload));
@@ -360,7 +479,7 @@ export class WhatsAppService {
             this.log(`History sync ${payload.syncType}: ${payload.status}`);
             if (payload.status === 'complete') {
                 this.setState({ syncing: false });
-                this.scheduleLidResolution();
+                this.scheduleLidResolution(500);
                 this.fireInbox();
             }
         });
@@ -388,9 +507,32 @@ export class WhatsAppService {
             this.mergeGroups(groups as GroupMetadata[]);
             this.fireInbox();
         });
+        sock.ev.on('call', (calls) => this.onCalls(calls));
 
         this.startKeepAlive();
         this.log(`Socket created (auth ${this.authDir})`);
+    }
+
+    /**
+     * Prefer WhatsApp's own service worker for the protocol version, and fall
+     * back to Baileys' copy of the GitHub constant when that is unreachable.
+     */
+    private async resolveVersion(): Promise<[number, number, number]> {
+        try {
+            const { version, isLatest } = await fetchLatestWaWebVersion();
+            if (isLatest) return version as [number, number, number];
+            this.log(`WhatsApp version fetch was stale (${version.join('.')}); using it anyway`);
+            return version as [number, number, number];
+        } catch (err) {
+            this.log(`WhatsApp version fetch failed: ${err instanceof Error ? err.message : err}`);
+        }
+        try {
+            const { version } = await fetchLatestBaileysVersion();
+            return version as [number, number, number];
+        } catch (err) {
+            this.log(`Baileys version fetch failed: ${err instanceof Error ? err.message : err}`);
+        }
+        return [2, 3000, 1043857760];
     }
 
     private async onConnectionUpdate(update: Partial<ConnectionState>): Promise<void> {
@@ -406,7 +548,9 @@ export class WhatsAppService {
         }
         if (connection === 'open') {
             this.reconnectAttempts = 0;
-            const account = this.sock?.user?.id ? jidNormalizedUser(this.sock.user.id).split('@')[0] : null;
+            const account = this.sock?.user?.id
+                ? jidNormalizedUser(this.sock.user.id).split('@')[0]
+                : null;
             this.setState({
                 state: 'connected',
                 qrDataUrl: null,
@@ -416,7 +560,7 @@ export class WhatsAppService {
             });
             this.log(`Connected as ${account ?? 'unknown'}`);
             void this.loadGroups();
-            this.scheduleLidResolution();
+            this.scheduleLidResolution(1_000);
             return;
         }
 
@@ -493,6 +637,7 @@ export class WhatsAppService {
     private onMessages(payload: { messages: WAMessage[]; type: string }): void {
         let changed = false;
         const named: Array<{ id: string; notify: string }> = [];
+        const incoming: Array<{ record: MessageRecord; chat: ChatRecord }> = [];
 
         for (const raw of payload.messages) {
             this.cacheRaw(raw);
@@ -506,9 +651,18 @@ export class WhatsAppService {
 
             if (this.typing.delete(record.chatId)) changed = true;
             if (this.store.applyMessage(record)) changed = true;
+
             if (!record.isMe && record.chatId === this.openChatId) {
                 this.store.clearUnread(record.chatId);
                 this.markRead(record);
+            } else if (!record.isMe) {
+                const chat = this.store.getChat(record.chatId);
+                if (chat) incoming.push({ record, chat });
+            }
+
+            // Media links expire, so queue the download while the socket is up.
+            if (record.kind !== 'text' && record.kind !== 'system' && record.kind !== 'other') {
+                this.queueMedia(raw, record);
             }
         }
 
@@ -517,23 +671,90 @@ export class WhatsAppService {
             changed = true;
         }
         if (changed) this.fireInbox();
+
+        for (const item of incoming) {
+            for (const listener of this._onIncoming) listener(item.record, item.chat);
+        }
     }
 
-    /** "typing…" signals from the other side of a conversation. */
+    /** "typing…" and presence signals from the other side of a conversation. */
     private onPresence(payload: {
         id: string;
-        presences: Record<string, { lastKnownPresence?: string | null }>;
+        presences: Record<string, { lastKnownPresence?: string | null; lastSeen?: number | null }>;
     }): void {
         const chatId = this.store.canonicalJid(payload.id);
-        const composing = Object.values(payload.presences ?? {}).some(
-            (presence) => presence.lastKnownPresence === 'composing',
+        const entries = Object.values(payload.presences ?? {});
+        const composing = entries.some((presence) => presence.lastKnownPresence === 'composing');
+        const online = entries.some(
+            (presence) =>
+                presence.lastKnownPresence === 'available' || presence.lastKnownPresence === 'composing',
         );
+        const lastSeen = entries
+            .map((presence) => presence.lastSeen)
+            .filter((value): value is number => typeof value === 'number' && value > 0)
+            .sort((a, b) => b - a)[0];
+
+        let changed = false;
         if (composing) {
             this.typing.set(chatId, Date.now() + 12_000);
-            this.fireInbox();
-            return;
+            changed = true;
+        } else if (this.typing.delete(chatId)) {
+            changed = true;
         }
-        if (this.typing.delete(chatId)) this.fireInbox();
+        if (this.store.setChatPresence(chatId, { online, lastSeen })) changed = true;
+        if (changed) this.fireInbox();
+    }
+
+    /** Emoji reactions, which arrive on their own event rather than in a message. */
+    private onReactions(
+        updates: Array<{
+            key: { id?: string | null; remoteJid?: string | null; fromMe?: boolean | null; participant?: string | null };
+            reaction: { text?: string | null };
+        }>,
+    ): void {
+        let changed = false;
+        for (const update of updates) {
+            const chatId = update.key.remoteJid;
+            const id = update.key.id;
+            if (!chatId || !id) continue;
+
+            const senderId = update.key.participant ?? (update.key.fromMe ? 'me' : chatId);
+            const reaction: ReactionRecord = {
+                text: update.reaction.text ?? '',
+                senderId,
+                senderName: this.store.nameFor(senderId),
+            };
+            if (this.store.setReaction(chatId, id, reaction)) changed = true;
+        }
+        if (changed) this.fireInbox();
+    }
+
+    /** Missed and completed call logs, shown as a system line in the chat. */
+    private onCalls(calls: WACallEvent[]): void {
+        let changed = false;
+        for (const call of calls) {
+            // Only record the terminal states; offer/ringing are noise.
+            if (call.status !== 'terminate' && call.status !== 'reject' && call.status !== 'timeout') {
+                continue;
+            }
+            const chatId = this.store.canonicalJid(call.chatId);
+            if (!isSupportedChat(chatId)) continue;
+            const label = call.isVideo ? 'Video call' : 'Voice call';
+            const outcome =
+                call.status === 'reject' ? 'declined' : call.status === 'timeout' ? 'missed' : 'ended';
+            const record: MessageRecord = {
+                id: `call-${call.id}`,
+                chatId,
+                text: `${label} · ${outcome}`,
+                kind: 'call',
+                senderId: call.from,
+                senderName: this.store.nameFor(call.from),
+                isMe: false,
+                timestamp: call.date.getTime(),
+            };
+            if (this.store.applyMessage(record)) changed = true;
+        }
+        if (changed) this.fireInbox();
     }
 
     /**
@@ -681,7 +902,11 @@ export class WhatsAppService {
         this.mergeChats(payload.chats ?? []);
 
         const records = (payload.messages ?? [])
-            .map((raw) => extractMessage(this.canonicalMessage(raw), this.extractContext()))
+            .map((raw) => {
+                const record = extractMessage(this.canonicalMessage(raw), this.extractContext());
+                if (record) this.cacheRaw(raw);
+                return record;
+            })
             .filter((record): record is MessageRecord => record !== null);
         const added = this.store.applyHistory(records);
 
@@ -691,7 +916,7 @@ export class WhatsAppService {
                 `(${added} stored${progress !== null ? `, ${progress}%` : ''})`,
         );
         this.setState({ syncing: payload.isLatest !== true, chatCount: this.store.listChats().length });
-        this.scheduleLidResolution();
+        this.scheduleLidResolution(1_500);
         this.fireInbox();
     }
 
@@ -722,6 +947,7 @@ export class WhatsAppService {
                 archived: chat.archived ?? undefined,
                 muted: Boolean(chat.muteEndTime && toMillis(chat.muteEndTime) > Date.now()),
                 lastTimestamp: timestamp || undefined,
+                pinned: chat.pinned ? true : undefined,
             });
         }
     }
@@ -735,6 +961,7 @@ export class WhatsAppService {
                     name: contact.name ?? undefined,
                     notify: contact.notify ?? undefined,
                     phone: contact.phoneNumber ?? undefined,
+                    username: contact.username ?? undefined,
                 })),
         );
     }
@@ -747,6 +974,7 @@ export class WhatsAppService {
                 name: participant.name ?? undefined,
                 notify: participant.notify ?? undefined,
                 phone: participant.phoneNumber ?? undefined,
+                username: participant.username ?? undefined,
             })),
         );
         if (participants.length) this.store.setContacts(participants);
@@ -771,39 +999,60 @@ export class WhatsAppService {
         }
     }
 
+    // ── LID resolution ──────────────────────────────────────────────────────
+
     /**
      * WhatsApp addresses some contacts by LID. Resolve those to phone-number
      * JIDs so a chat is labelled with a number (or saved contact) instead of an
      * opaque identifier.
+     *
+     * Two sources are used: the on-disk `lid-mapping` files Baileys keeps in the
+     * auth folder (which cover every contact ever mapped, including ones that
+     * have not messaged us this session), and the live socket's own mapping
+     * store. The disk pass is what fixes a contact showing up as
+     * `+254034497798362` instead of its name.
      */
-    private scheduleLidResolution(): void {
+    private scheduleLidResolution(delayMs = 2_000): void {
         if (this.lidTimer) clearTimeout(this.lidTimer);
         this.lidTimer = setTimeout(() => {
             this.lidTimer = undefined;
             void this.resolveLids();
-        }, 2_000);
+        }, delayMs);
     }
 
     private async resolveLids(): Promise<void> {
+        // The disk pass is cheap and covers contacts the socket never mentions.
+        const fromDisk = this.store.learnAliasesFromDisk(this.authDir);
+        if (fromDisk > 0) {
+            this.log(`Learned ${fromDisk} LID → phone mappings from disk`);
+            this.fireInbox();
+        }
+
         const sock = this.sock;
         const mapping = sock?.signalRepository?.lidMapping;
         if (!sock || !mapping) return;
 
-        const lids = this.store
-            .listChats({ includeArchived: true })
-            .map((chat) => chat.id)
-            .filter((id) => id.endsWith('@lid'))
-            .slice(0, 500);
-        if (!lids.length) return;
+        const pending = this.store.unresolvedLidChats();
+        if (!pending.length) return;
 
-        try {
-            const pairs = await mapping.getPNsForLIDs(lids);
-            if (!pairs?.length) return;
-            this.store.setAliases(pairs);
-            this.log(`Resolved ${pairs.length} of ${lids.length} LID chats to phone numbers`);
+        // Work in batches: one huge USync query gets rejected by the server.
+        let resolved = 0;
+        for (let index = 0; index < pending.length; index += LID_BATCH) {
+            const batch = pending.slice(index, index + LID_BATCH);
+            try {
+                const pairs = await mapping.getPNsForLIDs(batch);
+                if (pairs?.length) {
+                    this.store.setAliases(pairs);
+                    resolved += pairs.length;
+                }
+            } catch (err) {
+                this.log(`LID lookup failed for ${batch.length} chats: ${err}`);
+            }
+        }
+
+        if (resolved > 0) {
+            this.log(`Resolved ${resolved} of ${pending.length} LID chats to phone numbers`);
             this.fireInbox();
-        } catch (err) {
-            this.log(`LID lookup failed: ${err}`);
         }
     }
 
@@ -819,6 +1068,94 @@ export class WhatsAppService {
             this.log(`Group list failed: ${err}`);
         }
     }
+
+    // ── media ───────────────────────────────────────────────────────────────
+
+    private queueMedia(raw: WAMessage, record: MessageRecord): void {
+        if (record.media?.file || record.media?.failed) return;
+        if (this.mediaQueue.some((item) => item.record.id === record.id)) return;
+        this.mediaQueue.push({ raw, record });
+        this.scheduleMediaDrain();
+    }
+
+    private scheduleMediaDrain(): void {
+        if (this.mediaTimer) return;
+        this.mediaTimer = setTimeout(() => {
+            this.mediaTimer = undefined;
+            void this.drainMedia();
+        }, 750);
+    }
+
+    /**
+     * Download queued media a few at a time.
+     *
+     * Sequential with a small pause: a fresh account with a long history can
+     * queue hundreds of items, and downloading them all at once looks like
+     * abuse to WhatsApp's CDN.
+     */
+    private async drainMedia(): Promise<void> {
+        if (this.mediaDraining || this.disposed) return;
+        this.mediaDraining = true;
+        try {
+            while (this.mediaQueue.length && !this.disposed) {
+                const item = this.mediaQueue.shift();
+                if (!item) break;
+                const file = await this.media.ensure(item.raw, item.record);
+                if (file) {
+                    this.store.updateMessage(item.record.chatId, item.record.id, {
+                        media: { ...item.record.media, file, failed: false },
+                    });
+                    this.fireInbox();
+                } else {
+                    this.store.updateMessage(item.record.chatId, item.record.id, {
+                        media: { ...item.record.media, failed: true },
+                    });
+                }
+            }
+        } finally {
+            this.mediaDraining = false;
+            if (this.mediaQueue.length) this.scheduleMediaDrain();
+        }
+    }
+
+    // ── profile pictures ────────────────────────────────────────────────────
+
+    /**
+     * Fetch and cache the profile photo for the chats that do not have one.
+     *
+     * WhatsApp only returns a URL for contacts that share their photo, so a
+     * missing avatar is normal and not an error.
+     */
+    async loadAvatars(chatIds?: string[]): Promise<number> {
+        const sock = this.sock;
+        if (!sock || !this.isConnected()) return 0;
+
+        const chats = (chatIds ? chatIds.map((id) => this.store.getChat(id)) : this.store.listChats())
+            .filter((chat): chat is ChatRecord => Boolean(chat))
+            .filter((chat) => !chat.avatar)
+            .slice(0, 40);
+        if (!chats.length) return 0;
+
+        let loaded = 0;
+        for (const chat of chats) {
+            try {
+                const url = await sock.profilePictureUrl(chat.id, 'preview');
+                if (!url) continue;
+                const file = await this.media.avatar(url, chat.id);
+                if (!file) continue;
+                if (this.store.setAvatar(chat.id, file)) loaded += 1;
+            } catch {
+                // No photo, or the contact hides it: both are fine.
+            }
+        }
+        if (loaded > 0) {
+            this.log(`Loaded ${loaded} profile pictures`);
+            this.fireInbox();
+        }
+        return loaded;
+    }
+
+    // ── helpers ─────────────────────────────────────────────────────────────
 
     private async markRead(record: MessageRecord): Promise<void> {
         if (!this.sock) return;
@@ -836,8 +1173,6 @@ export class WhatsAppService {
         }
     }
 
-    // ── helpers ─────────────────────────────────────────────────────────────
-
     private ensureSocket(): WASocket {
         const sock = this.sock;
         if (!sock || !this.isConnected()) {
@@ -850,7 +1185,7 @@ export class WhatsAppService {
         const id = raw.key?.id;
         if (!id) return;
         this.rawCache.set(id, raw);
-        while (this.rawCache.size > 1_000) {
+        while (this.rawCache.size > 2_000) {
             const oldest = this.rawCache.keys().next().value;
             if (!oldest) break;
             this.rawCache.delete(oldest);

@@ -50,6 +50,8 @@ export function extractMessage(raw: WAMessage, ctx: ExtractContext): MessageReco
         timestamp,
         quoted,
         media: described.media,
+        poll: described.poll,
+        forwarded: content && isForwarded(content) ? true : undefined,
     };
 }
 
@@ -83,9 +85,9 @@ function unwrap(message: proto.IMessage | null | undefined): proto.IMessage | un
     if (!content) return undefined;
     // Traffic that is not a user-visible message.
     if (!contentType(content)) return undefined;
-    if (content.senderKeyDistributionMessage || content.protocolMessage || content.reactionMessage) {
-        return undefined;
-    }
+    if (content.senderKeyDistributionMessage || content.protocolMessage) return undefined;
+    // Reactions arrive on their own event; a reaction *message* is noise here.
+    if (content.reactionMessage) return undefined;
     return content;
 }
 
@@ -102,21 +104,30 @@ interface Described {
     text: string;
     kind: MessageKind;
     media?: MessageRecord['media'];
+    poll?: MessageRecord['poll'];
 }
 
 function describe(content: proto.IMessage, raw: WAMessage): Described | null {
     const c = content;
 
     if (c.conversation) return { text: c.conversation, kind: 'text' };
-    if (c.extendedTextMessage?.text) return { text: c.extendedTextMessage.text, kind: 'text' };
-    if (c.extendedTextMessage?.matchedText) return { text: c.extendedTextMessage.matchedText, kind: 'text' };
+    if (c.extendedTextMessage?.text) {
+        return { text: c.extendedTextMessage.text, kind: 'text' };
+    }
+    if (c.extendedTextMessage?.matchedText) {
+        return { text: c.extendedTextMessage.matchedText, kind: 'text' };
+    }
 
     if (c.imageMessage) {
         const caption = c.imageMessage.caption?.trim();
         return {
             text: caption || 'Photo',
             kind: 'image',
-            media: { mimetype: c.imageMessage.mimetype ?? undefined },
+            media: {
+                mimetype: c.imageMessage.mimetype ?? undefined,
+                width: c.imageMessage.width ?? undefined,
+                height: c.imageMessage.height ?? undefined,
+            },
         };
     }
     if (c.videoMessage) {
@@ -125,10 +136,17 @@ function describe(content: proto.IMessage, raw: WAMessage): Described | null {
         return {
             text: caption || (c.videoMessage.gifPlayback ? 'GIF' : withDuration('Video', seconds)),
             kind: 'video',
-            media: { mimetype: c.videoMessage.mimetype ?? undefined, seconds },
+            media: {
+                mimetype: c.videoMessage.mimetype ?? undefined,
+                seconds,
+                width: c.videoMessage.width ?? undefined,
+                height: c.videoMessage.height ?? undefined,
+            },
         };
     }
-    if (c.ptvMessage) return { text: 'Video message', kind: 'video' };
+    if (c.ptvMessage) {
+        return { text: 'Video message', kind: 'video', media: { seconds: c.ptvMessage.seconds ?? undefined } };
+    }
     if (c.audioMessage) {
         const seconds = c.audioMessage.seconds ?? undefined;
         return {
@@ -146,13 +164,15 @@ function describe(content: proto.IMessage, raw: WAMessage): Described | null {
             media: {
                 mimetype: c.documentMessage.mimetype ?? undefined,
                 fileName: c.documentMessage.fileName ?? undefined,
+                seconds: undefined,
             },
         };
     }
     if (c.stickerMessage) return { text: 'Sticker', kind: 'sticker' };
     if (c.locationMessage) {
         const loc = c.locationMessage;
-        const label = loc.name || loc.address || `${loc.degreesLatitude ?? 0}, ${loc.degreesLongitude ?? 0}`;
+        const label =
+            loc.name || loc.address || `${loc.degreesLatitude ?? 0}, ${loc.degreesLongitude ?? 0}`;
         return { text: `Location: ${label}`, kind: 'location' };
     }
     if (c.liveLocationMessage) return { text: 'Live location', kind: 'location' };
@@ -167,7 +187,27 @@ function describe(content: proto.IMessage, raw: WAMessage): Described | null {
     }
     if (c.pollCreationMessage || c.pollCreationMessageV2 || c.pollCreationMessageV3) {
         const poll = c.pollCreationMessage ?? c.pollCreationMessageV2 ?? c.pollCreationMessageV3;
-        return { text: `Poll: ${poll?.name ?? ''}`.trim(), kind: 'poll' };
+        const question = poll?.name ?? '';
+        const options = (poll?.options ?? [])
+            .map((option) => option.optionName ?? '')
+            .filter((name): name is string => Boolean(name));
+        return {
+            text: question ? `Poll: ${question}` : 'Poll',
+            kind: 'poll',
+            poll: { question, options },
+        };
+    }
+    if (c.callLogMesssage) {
+        const log = c.callLogMesssage;
+        const kind = log.isVideo ? 'Video call' : 'Voice call';
+        const outcome = callOutcomeName(log.callOutcome);
+        const duration = toSeconds(log.durationSecs);
+        return {
+            text: [kind, outcome, duration ? withDuration('', duration) : '']
+                .filter(Boolean)
+                .join(' · '),
+            kind: 'call',
+        };
     }
     if (c.eventMessage?.name) return { text: `Event: ${c.eventMessage.name}`, kind: 'other' };
     if (c.groupInviteMessage?.groupName) {
@@ -208,13 +248,19 @@ function stubText(raw: WAMessage): string | null {
         case 10:
             return params[0] ? `Group named "${params[0]}"` : 'Group renamed';
         case 11:
-            return params[0] ? `Group icon changed` : 'Group icon changed';
+            return 'Group icon changed';
         case 12:
             return 'Group description changed';
         case 13:
             return 'Group settings changed';
         case 14:
             return params[0] ? `${params[0]} joined` : 'Participant joined';
+        case 15:
+            return params[0] ? `${params[0]} left` : 'Participant left';
+        case 16:
+            return params[0] ? `${params[0]} was removed` : 'Participant removed';
+        case 17:
+            return 'You were added';
         default:
             return null;
     }
@@ -237,13 +283,16 @@ function describeQuote(
         (unwrapped.imageMessage ? 'Photo' : undefined) ||
         (unwrapped.audioMessage ? 'Voice message' : undefined) ||
         (unwrapped.documentMessage?.fileName ?? undefined) ||
-        (unwrapped.stickerMessage ? 'Sticker' : undefined);
+        (unwrapped.stickerMessage ? 'Sticker' : undefined) ||
+        (unwrapped.pollCreationMessage?.name ?? undefined) ||
+        (unwrapped.locationMessage?.name ?? undefined);
     if (!text) return undefined;
 
     const participant = context?.participant ?? undefined;
     return {
         text,
         senderName: participant ? ctx.nameFor(participant) : '',
+        senderId: participant ?? undefined,
     };
 }
 
@@ -255,12 +304,49 @@ function firstContextInfo(content: proto.IMessage): proto.IContextInfo | undefin
     return undefined;
 }
 
+function isForwarded(content: proto.IMessage): boolean {
+    return Boolean(firstContextInfo(content)?.isForwarded);
+}
+
+function callOutcomeName(outcome: proto.Message.CallLogMessage.CallOutcome | null | undefined): string {
+    switch (outcome) {
+        case 0:
+            return 'completed';
+        case 1:
+            return 'missed';
+        case 2:
+            return 'failed';
+        case 3:
+            return 'declined';
+        case 4:
+            return 'answered elsewhere';
+        case 5:
+            return 'ongoing';
+        case 6:
+            return 'silenced';
+        case 7:
+            return 'silenced (unknown caller)';
+        default:
+            return '';
+    }
+}
+
 function withDuration(label: string, seconds?: number | null): string {
     if (!seconds) return label;
     const total = Math.round(seconds);
     const minutes = Math.floor(total / 60);
     const rest = total % 60;
+    if (!label) return `${minutes}:${String(rest).padStart(2, '0')}`;
     return `${label} (${minutes}:${String(rest).padStart(2, '0')})`;
+}
+
+function toSeconds(value: unknown): number {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') return value;
+    const numberLike = value as { toNumber?: () => number };
+    if (typeof numberLike.toNumber === 'function') return numberLike.toNumber();
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function toMillis(timestamp: WAMessage['messageTimestamp']): number {

@@ -8,6 +8,7 @@ export type MessageKind =
     | 'location'
     | 'contact'
     | 'poll'
+    | 'call'
     | 'system'
     | 'other';
 
@@ -25,6 +26,21 @@ export interface ChatRecord {
     lastTimestamp: number;
     /** Who wrote the newest message (groups). */
     lastSender: string;
+    /** True while this person is online right now. */
+    online?: boolean;
+    /** Epoch ms of their last "last seen", when WhatsApp shares it. */
+    lastSeen?: number;
+    /** Cached profile photo, as a `webview://` URL. */
+    avatar?: string;
+    /** The user pinned this chat. */
+    pinned?: boolean;
+}
+
+export interface ReactionRecord {
+    /** Emoji, or an empty string when the reaction was removed. */
+    text: string;
+    senderId: string;
+    senderName: string;
 }
 
 export interface MessageRecord {
@@ -38,15 +54,32 @@ export interface MessageRecord {
     isMe: boolean;
     /** Milliseconds since epoch. */
     timestamp: number;
-    quoted?: { text: string; senderName: string };
+    quoted?: { text: string; senderName: string; senderId?: string };
     /** Media details worth showing without downloading the bytes. */
-    media?: { mimetype?: string; fileName?: string; seconds?: number };
+    media?: {
+        mimetype?: string;
+        fileName?: string;
+        seconds?: number;
+        /** Local file the bytes were downloaded to. */
+        file?: string;
+        /** True once the download was attempted and failed. */
+        failed?: boolean;
+        /** Original dimensions, for images and video. */
+        width?: number;
+        height?: number;
+    };
     /** Delivery state, for messages you sent. */
     status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
     /** The sender edited this message after sending it. */
     edited?: boolean;
     /** The sender deleted this message for everyone. */
     deleted?: boolean;
+    /** Emoji reactions on this message, keyed by sender. */
+    reactions?: ReactionRecord[];
+    /** The message is a forwarded copy. */
+    forwarded?: boolean;
+    /** Poll options, when `kind` is `poll`. */
+    poll?: { question: string; options: string[] };
 }
 
 export interface ContactRecord {
@@ -57,6 +90,8 @@ export interface ContactRecord {
     notify?: string;
     /** Phone-number JID when the contact is addressed by LID. */
     phone?: string;
+    /** WhatsApp username (`@handle`), when the account has one. */
+    username?: string;
 }
 
 export interface GroupRecord {

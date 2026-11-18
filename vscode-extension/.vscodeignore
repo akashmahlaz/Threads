@@ -1,7 +1,25 @@
+# Scratch and preview folders
 .probe/**
 .preview/**
+.preview/**
+
+# Source and build inputs (dist/extension.js is the built output)
 src/**
+test/**
 tsconfig.json
+
+# Dependencies are bundled into dist/extension.js by esbuild
 node_modules/**
+
+# TypeScript artifacts and source maps
 **/*.ts
 **/*.map
+
+# Local environment and editor files
+.env
+.env.*
+.vscode-test/
+.DS_Store
+
+# Previous package builds
+*.vsix

@@ -14,6 +14,7 @@
     let archivedOpen = false;
     let errorTimer;
     let searchTimer;
+    let avatarsRequested = false;
 
     // ── host messages ───────────────────────────────────────────────────────
     window.addEventListener('message', (event) => {
@@ -26,6 +27,7 @@
             case 'chats':
                 chats = msg.items || [];
                 renderChats();
+                maybeRequestAvatars();
                 break;
             case 'messages':
                 if (openChat && msg.chatId === openChat.id) {
@@ -153,9 +155,7 @@
         const needle = filter.trim().toLowerCase();
         const archivedCount = chats.filter((chat) => chat.archived).length;
 
-        toggle.textContent = archivedOpen
-            ? 'Back to inbox'
-            : `Archived (${archivedCount})`;
+        toggle.textContent = archivedOpen ? 'Back to inbox' : `Archived (${archivedCount})`;
         toggle.classList.toggle('hidden', archivedCount === 0 && !archivedOpen);
 
         const pool = chats.filter((chat) => Boolean(chat.archived) === archivedOpen);
@@ -185,17 +185,22 @@
         }
     }
 
+    /** Ask the host for profile pictures once the list has something in it. */
+    function maybeRequestAvatars() {
+        if (avatarsRequested) return;
+        if (!chats.length) return;
+        if (!chats.some((chat) => !chat.avatar)) return;
+        avatarsRequested = true;
+        post({ type: 'avatars' });
+    }
+
     function chatRow(chat) {
         const row = document.createElement('div');
         row.className = 'chat-row';
         row.setAttribute('role', 'listitem');
         row.tabIndex = 0;
 
-        const avatar = document.createElement('span');
-        avatar.className = 'avatar';
-        avatar.style.setProperty('--hue', hueOf(chat.id));
-        avatar.textContent = initials(chat.name);
-        if (chat.isGroup) avatar.classList.add('group');
+        const avatar = avatarNode(chat, 'avatar');
 
         const main = document.createElement('span');
         main.className = 'chat-main';
@@ -205,6 +210,7 @@
         const name = document.createElement('span');
         name.className = 'chat-name';
         name.textContent = chat.name;
+        if (chat.muted) name.classList.add('is-muted');
         const time = document.createElement('span');
         time.className = 'chat-time';
         time.textContent = chat.timestamp ? shortTime(chat.timestamp) : '';
@@ -215,7 +221,13 @@
         const preview = document.createElement('span');
         preview.className = 'chat-preview';
         const prefix = chat.isGroup && chat.sender ? `${chat.sender}: ` : '';
-        preview.textContent = `${prefix}${chat.preview || ''}`;
+        if (chat.typing) {
+            // A typing chat says so, in the accent colour, instead of its preview.
+            preview.textContent = chat.isGroup && chat.sender ? `${chat.sender} is typing…` : 'typing…';
+            preview.classList.add('typing');
+        } else {
+            preview.textContent = `${prefix}${chat.preview || ''}`;
+        }
         bottom.appendChild(preview);
 
         if (chat.muted) {
@@ -234,6 +246,15 @@
 
         main.append(top, bottom);
         row.append(avatar, main);
+
+        if (chat.pinned) {
+            const pin = document.createElement('span');
+            pin.className = 'pin-mark';
+            pin.title = 'Pinned';
+            pin.textContent = '📌';
+            row.appendChild(pin);
+        }
+
         row.addEventListener('click', () => showChat(chat));
         row.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' || event.key === ' ') {
@@ -242,6 +263,28 @@
             }
         });
         return row;
+    }
+
+    /** A profile photo when we have one, initials otherwise. */
+    function avatarNode(chat, className) {
+        const avatar = document.createElement('span');
+        avatar.className = className;
+        avatar.style.setProperty('--hue', hueOf(chat.id));
+        if (chat.isGroup) avatar.classList.add('group');
+
+        if (chat.avatar) {
+            const img = document.createElement('img');
+            img.className = 'avatar-img';
+            img.src = chat.avatar;
+            img.alt = '';
+            img.loading = 'lazy';
+            avatar.textContent = '';
+            avatar.appendChild(img);
+            return avatar;
+        }
+
+        avatar.textContent = initials(chat.name);
+        return avatar;
     }
 
     // ── message search ──────────────────────────────────────────────────────
@@ -291,19 +334,44 @@
 
     function renderChatHeader(chat, typing) {
         $('chat-title').textContent = chat.name;
-        const base = chat.isGroup
-            ? chat.members
-                ? `${chat.members} members`
-                : 'Group'
-            : chat.id.endsWith('@lid')
-              ? 'WhatsApp contact'
-              : formatPhone(chat.id);
+
         const subtitle = $('chat-subtitle');
-        subtitle.textContent = typing ? 'typing…' : base;
+        subtitle.textContent = presenceLine(chat, typing);
         subtitle.classList.toggle('typing', Boolean(typing));
-        $('chat-avatar').style.setProperty('--hue', hueOf(chat.id));
-        $('chat-avatar').textContent = initials(chat.name);
-        $('chat-avatar').classList.toggle('group', Boolean(chat.isGroup));
+        subtitle.classList.toggle('online', Boolean(chat.online) && !typing);
+
+        const avatar = $('chat-avatar');
+        avatar.style.setProperty('--hue', hueOf(chat.id));
+        avatar.classList.toggle('group', Boolean(chat.isGroup));
+        if (chat.avatar) {
+            avatar.textContent = '';
+            if (!avatar.querySelector('img')) {
+                const img = document.createElement('img');
+                img.className = 'avatar-img';
+                img.src = chat.avatar;
+                img.alt = '';
+                avatar.appendChild(img);
+            } else {
+                avatar.querySelector('img').src = chat.avatar;
+            }
+        } else {
+            avatar.textContent = initials(chat.name);
+        }
+
+        const mute = $('mute-btn');
+        mute.setAttribute('aria-pressed', chat.muted ? 'true' : 'false');
+        mute.title = chat.muted ? 'Unmute' : 'Mute';
+        mute.textContent = chat.muted ? '🔕' : '🔇';
+    }
+
+    function presenceLine(chat, typing) {
+        if (typing) return 'typing…';
+        if (chat.isGroup) {
+            return chat.members ? `${chat.members} members` : 'Group';
+        }
+        if (chat.online) return 'online';
+        if (chat.lastSeen) return `last seen ${shortTime(chat.lastSeen)}`;
+        return chat.id.endsWith('@lid') ? 'WhatsApp contact' : formatPhone(chat.id);
     }
 
     function renderMessages(items) {
@@ -356,6 +424,13 @@
             bubble.appendChild(who);
         }
 
+        if (message.forwarded) {
+            const fwd = document.createElement('span');
+            fwd.className = 'forwarded';
+            fwd.textContent = 'Forwarded';
+            bubble.appendChild(fwd);
+        }
+
         if (message.quoted) {
             const quote = document.createElement('div');
             quote.className = 'quote';
@@ -372,10 +447,48 @@
             bubble.appendChild(quote);
         }
 
+        const media = mediaNode(message);
+        if (media) bubble.appendChild(media);
+
+        if (message.poll) {
+            const poll = document.createElement('div');
+            poll.className = 'poll';
+            const question = document.createElement('div');
+            question.className = 'poll-question';
+            question.textContent = message.poll.question || 'Poll';
+            poll.appendChild(question);
+            for (const option of message.poll.options) {
+                const choice = document.createElement('div');
+                choice.className = 'poll-option';
+                choice.textContent = option;
+                poll.appendChild(choice);
+            }
+            bubble.appendChild(poll);
+        }
+
         const text = document.createElement('span');
         text.className = 'text';
         text.textContent = message.text;
-        bubble.appendChild(text);
+        // A caption under a photo reads better without repeating the label.
+        if (!media || message.kind === 'audio' || message.kind === 'video') {
+            bubble.appendChild(text);
+        } else if (message.text !== 'Photo' && message.text !== 'Sticker') {
+            bubble.appendChild(text);
+        }
+
+        if (message.reactions && message.reactions.length) {
+            const reactions = document.createElement('div');
+            reactions.className = 'reactions';
+            for (const reaction of message.reactions) {
+                if (!reaction.text) continue;
+                const chip = document.createElement('span');
+                chip.className = 'reaction';
+                chip.textContent = reaction.text;
+                chip.title = reaction.senderName || '';
+                reactions.appendChild(chip);
+            }
+            if (reactions.childElementCount) bubble.appendChild(reactions);
+        }
 
         const meta = document.createElement('span');
         meta.className = 'meta';
@@ -408,7 +521,94 @@
         }
 
         row.appendChild(bubble);
+
+        // Reply on hover: a small button that appears beside the bubble.
+        const reply = document.createElement('button');
+        reply.type = 'button';
+        reply.className = 'reply-btn';
+        reply.title = 'Reply';
+        reply.setAttribute('aria-label', 'Reply');
+        reply.textContent = '↩';
+        reply.addEventListener('click', (event) => {
+            event.stopPropagation();
+            startReply(message);
+        });
+        row.appendChild(reply);
+
         return row;
+    }
+
+    /** Photos, video, voice notes, files and stickers. */
+    function mediaNode(message) {
+        const media = message.media;
+        if (!media) return null;
+
+        if (message.kind === 'image' || message.kind === 'sticker') {
+            if (!media.url) return placeholder(message, media);
+            const wrap = document.createElement('div');
+            wrap.className = 'media image';
+            const img = document.createElement('img');
+            img.src = media.url;
+            img.alt = message.text || 'Photo';
+            img.loading = 'lazy';
+            wrap.appendChild(img);
+            return wrap;
+        }
+
+        if (message.kind === 'video') {
+            if (!media.url) return placeholder(message, media);
+            const wrap = document.createElement('div');
+            wrap.className = 'media video';
+            const video = document.createElement('video');
+            video.src = media.url;
+            video.controls = true;
+            video.preload = 'metadata';
+            video.playsInline = true;
+            wrap.appendChild(video);
+            return wrap;
+        }
+
+        if (message.kind === 'audio') {
+            if (!media.url) return placeholder(message, media);
+            const wrap = document.createElement('div');
+            wrap.className = 'media audio';
+            const audio = document.createElement('audio');
+            audio.src = media.url;
+            audio.controls = true;
+            audio.preload = 'metadata';
+            wrap.appendChild(audio);
+            return wrap;
+        }
+
+        if (message.kind === 'document') {
+            const wrap = document.createElement('div');
+            wrap.className = 'media document';
+            if (media.url) {
+                const link = document.createElement('a');
+                link.className = 'doc-link';
+                link.href = media.url;
+                link.textContent = media.fileName || message.text || 'Document';
+                link.setAttribute('download', media.fileName || '');
+                wrap.appendChild(link);
+            } else {
+                wrap.appendChild(placeholder(message, media));
+            }
+            return wrap;
+        }
+
+        return null;
+    }
+
+    /** Shown while media is downloading, or when the download failed. */
+    function placeholder(message, media) {
+        const box = document.createElement('div');
+        box.className = 'media-placeholder';
+        if (media.failed) {
+            box.textContent = 'Media unavailable';
+            return box;
+        }
+        box.textContent = message.kind === 'audio' ? 'Loading voice message…' : 'Loading…';
+        return box;
     }
 
     function tick(status) {
@@ -448,10 +648,30 @@
     function sendMessage() {
         const text = input.value.trim();
         if (!text || !openChat) return;
-        post({ type: 'send', to: openChat.id, text });
+        post({ type: 'send', to: openChat.id, text, replyTo: replyingTo || undefined });
         input.value = '';
+        clearReply();
         autoGrow();
         input.focus();
+    }
+
+    // ── replying ────────────────────────────────────────────────────────────
+    let replyingTo = null;
+
+    function startReply(message) {
+        replyingTo = message;
+        const bar = $('reply-bar');
+        const who = $('reply-who');
+        const what = $('reply-what');
+        who.textContent = message.mine ? 'You' : message.sender || 'Them';
+        what.textContent = message.text || message.kind;
+        bar.classList.remove('hidden');
+        input.focus();
+    }
+
+    function clearReply() {
+        replyingTo = null;
+        $('reply-bar').classList.add('hidden');
     }
 
     function autoGrow() {
@@ -474,6 +694,16 @@
         $('list-pane').classList.remove('hidden');
         post({ type: 'close' });
     });
+
+    $('mute-btn').addEventListener('click', () => {
+        if (!openChat) return;
+        const muted = !openChat.muted;
+        openChat = { ...openChat, muted };
+        renderChatHeader(openChat);
+        post({ type: 'mute', chatId: openChat.id, muted });
+    });
+
+    $('reply-cancel').addEventListener('click', clearReply);
 
     // ── search box ──────────────────────────────────────────────────────────
     $('search').addEventListener('input', (event) => {

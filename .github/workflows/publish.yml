@@ -1,0 +1,61 @@
+name: Publish to VS Code Marketplace
+
+# Publishes the extension to the Visual Studio Marketplace using OIDC trusted
+# publishing — no long-lived PAT is stored in this repository.
+#
+# The policy on the publisher's "Trusted Publishing" page must name this
+# workflow file exactly: publish.yml, repository owner akashmahlaz,
+# repository Threads. See https://aka.ms/vsm/trustedpublishing
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The Marketplace credential expires after 15 minutes and each GitHub
+    # OIDC token can be exchanged only once, so this job does one thing.
+    permissions:
+      contents: read
+      id-token: write # required to request the OIDC token
+    defaults:
+      run:
+        working-directory: vscode-extension
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run compile
+
+      - name: Verify the version matches the tag
+        if: github.event_name == 'release'
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "::error::package.json version ($PKG) does not match tag ($TAG)"
+            exit 1
+          fi
+
+      - name: Publish
+        run: npx @vscode/vsce publish --oidc

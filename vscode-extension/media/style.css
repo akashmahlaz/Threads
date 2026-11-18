@@ -642,3 +642,213 @@ body.vscode-light .bubble .sender {
     color: var(--accent, #25d366);
     font-style: italic;
 }
+
+/* ── profile photos ─────────────────────────────────────────────────────── */
+.avatar {
+    overflow: hidden;
+}
+
+.avatar-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.chat-subtitle.online {
+    color: #25d366;
+}
+
+/* ── mute / pin marks ───────────────────────────────────────────────────── */
+.chat-name.is-muted {
+    opacity: 0.72;
+}
+
+.pin-mark {
+    flex-shrink: 0;
+    font-size: 10px;
+    line-height: 1;
+    opacity: 0.7;
+}
+
+#mute-btn {
+    font-size: 13px;
+    line-height: 1;
+}
+
+#mute-btn[aria-pressed='true'] {
+    opacity: 0.55;
+}
+
+/* ── media in bubbles ───────────────────────────────────────────────────── */
+.media {
+    margin: 2px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    max-width: 100%;
+}
+
+.media.image img {
+    display: block;
+    max-width: 100%;
+    max-height: 320px;
+    border-radius: 8px;
+    cursor: zoom-in;
+}
+
+.media video {
+    display: block;
+    max-width: 100%;
+    max-height: 320px;
+    border-radius: 8px;
+    background: #000;
+}
+
+.media audio {
+    display: block;
+    width: 100%;
+    min-width: 220px;
+}
+
+.media.document {
+    padding: 6px 8px;
+    background: rgba(127, 127, 127, 0.14);
+    border-radius: 8px;
+}
+
+.doc-link {
+    color: var(--vscode-textLink-foreground, #4daafc);
+    font-size: 12px;
+    word-break: break-all;
+}
+
+.doc-link:hover {
+    text-decoration: underline;
+}
+
+.media-placeholder {
+    padding: 10px 8px;
+    border-radius: 8px;
+    background: rgba(127, 127, 127, 0.12);
+    font-size: 11px;
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* ── forwarded / reactions / polls ──────────────────────────────────────── */
+.forwarded {
+    font-size: 10px;
+    font-style: italic;
+    color: var(--muted);
+}
+
+.reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin-top: 2px;
+}
+
+.reaction {
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--vscode-badge-background, rgba(255, 255, 255, 0.12));
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.poll {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 3px 0;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: rgba(127, 127, 127, 0.14);
+}
+
+.poll-question {
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.poll-option {
+    font-size: 12px;
+    color: var(--muted);
+    padding-left: 10px;
+    position: relative;
+}
+
+.poll-option::before {
+    content: '○';
+    position: absolute;
+    left: 0;
+    opacity: 0.6;
+}
+
+/* ── replying ───────────────────────────────────────────────────────────── */
+.reply-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-top: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    background: var(--vscode-sideBar-background, rgba(255, 255, 255, 0.03));
+}
+
+.reply-body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+    gap: 1px;
+}
+
+.reply-who {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+}
+
+.reply-what {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Reply appears on hover, so it never competes with the message. */
+.reply-btn {
+    align-self: center;
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--hover);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+}
+
+.row:hover .reply-btn,
+.reply-btn:focus-visible {
+    opacity: 1;
+}
+
+.reply-btn:hover {
+    color: var(--vscode-foreground);
+    background: var(--active);
+}
+
+/* ── typing in the chat list ────────────────────────────────────────────── */
+.chat-preview.typing {
+    color: #25d366;
+    font-style: italic;
+}
