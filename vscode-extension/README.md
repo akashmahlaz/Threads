@@ -2,6 +2,10 @@
 
 WhatsApp in your VS Code sidebar, with native Copilot tool calls.
 
+| Inbox | Conversation |
+| --- | --- |
+| ![Threads chat list](media/screenshots/list.png) | ![Threads conversation](media/screenshots/chat.png) |
+
 ## What it does
 
 - **Your real inbox** — chats, contacts and groups (subject, member count, sender names) from WhatsApp
