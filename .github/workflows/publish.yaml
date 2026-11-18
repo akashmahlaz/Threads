@@ -6,13 +6,15 @@ name: Publish to VS Code Marketplace
 # The policy on the publisher's "Trusted Publishing" page must match this run
 # exactly: repository owner akashmahlaz, repository Threads, workflow
 # publish.yaml, environment Production. See https://aka.ms/vsm/trustedpublishing
+#
+# Publishing happens on a push to main that touches the extension, on a
+# published release, or on demand. Bump the version in
+# vscode-extension/package.json before pushing; the workflow refuses to
+# republish a version that is already live.
 
 on:
   push:
     branches: [main]
-    paths:
-      - 'vscode-extension/**'
-      - .github/workflows/publish.yaml
   release:
     types: [published]
   workflow_dispatch:
@@ -21,7 +23,40 @@ permissions:
   contents: read
 
 jobs:
+  # A push that only touches docs or this workflow has nothing to publish.
+  # Decide that here so the publish job can skip instead of failing.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      extension: ${{ steps.filter.outputs.extension }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Did the extension change?
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "extension=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "extension=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" || true)
+          if echo "$CHANGED" | grep -q '^vscode-extension/'; then
+            echo "extension=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "extension=false" >> "$GITHUB_OUTPUT"
+            echo "Only docs or workflow files changed; nothing to publish."
+          fi
+
   publish:
+    needs: changes
+    if: needs.changes.outputs.extension == 'true'
     runs-on: ubuntu-latest
     environment: Production
     # The Marketplace credential expires after 15 minutes and each GitHub
@@ -74,27 +109,22 @@ jobs:
           echo "environment     = ${{ github.environment }}"
           echo "event           = ${{ github.event_name }}"
           echo "publisher       = $(node -p "require('./package.json').publisher")"
+          echo "version         = $(node -p "require('./package.json').version")"
 
       - name: Refuse to republish a version that is already live
         run: |
           PKG=$(node -p "require('./package.json').version")
-          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://marketplace.visualstudio.com/items?itemName=akashdeepsingh.threads")
-          if [ "$CODE" = "200" ]; then
-            LIVE=$(curl -s \
-              "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json;api-version=7.2-preview.1" \
-              -d '{"filters":[{"criteria":[{"filterType":7,"value":"akashdeepsingh.threads"}]}],"flags":914}' \
-              | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).results[0].extensions[0].versions[0].version)}catch{console.log('')}})")
-            if [ "$LIVE" = "$PKG" ]; then
-              echo "::error::version $PKG is already published. Bump package.json before publishing."
-              exit 1
-            fi
-            echo "Live version is $LIVE; publishing $PKG."
-          else
-            echo "Nothing published yet; publishing $PKG."
+          LIVE=$(curl -s \
+            "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json;api-version=7.2-preview.1" \
+            -d '{"filters":[{"criteria":[{"filterType":7,"value":"akashdeepsingh.threads"}]}],"flags":914}' \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).results[0].extensions[0].versions[0].version)}catch{console.log('')}})")
+          if [ "$LIVE" = "$PKG" ]; then
+            echo "::error::version $PKG is already published. Bump package.json before pushing."
+            exit 1
           fi
+          echo "Live version is ${LIVE:-none}; publishing $PKG."
 
       - name: Publish
         run: npx @vscode/vsce publish --oidc
