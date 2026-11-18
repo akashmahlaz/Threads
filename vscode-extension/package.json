@@ -1,0 +1,223 @@
+{
+  "name": "threads",
+  "displayName": "Threads",
+  "description": "WhatsApp in your sidebar \u2014 chats, groups and contacts, with native Copilot tools",
+  "version": "0.4.0",
+  "publisher": "threads",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:threads.sidebar",
+    "onCommand:threads.startWhatsApp",
+    "onCommand:threads.logoutWhatsApp",
+    "onCommand:threads.checkCopilot",
+    "onLanguageModelTool:threads_whatsapp_send",
+    "onLanguageModelTool:threads_whatsapp_list_chats",
+    "onLanguageModelTool:threads_whatsapp_read_chat",
+    "onLanguageModelTool:threads_whatsapp_search",
+    "onLanguageModelTool:threads_whatsapp_groups"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "threads",
+          "title": "Threads",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "threads": [
+        {
+          "id": "threads.sidebar",
+          "name": "Inbox",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "threads.startWhatsApp",
+        "title": "Start WhatsApp",
+        "category": "Threads"
+      },
+      {
+        "command": "threads.stopWhatsApp",
+        "title": "Stop WhatsApp",
+        "category": "Threads"
+      },
+      {
+        "command": "threads.logoutWhatsApp",
+        "title": "Unlink WhatsApp & Re-import",
+        "category": "Threads"
+      },
+      {
+        "command": "threads.openLogs",
+        "title": "Open Logs",
+        "category": "Threads"
+      },
+      {
+        "command": "threads.checkCopilot",
+        "title": "Check Copilot Tools",
+        "category": "Threads"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "threads.checkCopilot",
+          "when": "view == threads.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "threads.startWhatsApp",
+          "when": "view == threads.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "threads.openLogs",
+          "when": "view == threads.sidebar",
+          "group": "navigation"
+        }
+      ]
+    },
+    "languageModelTools": [
+      {
+        "name": "threads_whatsapp_send",
+        "displayName": "Send WhatsApp Message",
+        "modelDescription": "Send a text message on WhatsApp. Use a chat id from threads_whatsapp_list_chats or threads_whatsapp_groups, or a phone number in international format without + (e.g. 15551234567).",
+        "icon": "media/icon.svg",
+        "tags": [
+          "whatsapp",
+          "messaging"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string",
+              "description": "Chat id (e.g. 15551234567@s.whatsapp.net or 1203630@g.us) or a bare international phone number"
+            },
+            "text": {
+              "type": "string",
+              "description": "The message text to send"
+            }
+          },
+          "required": [
+            "to",
+            "text"
+          ]
+        }
+      },
+      {
+        "name": "threads_whatsapp_list_chats",
+        "displayName": "List WhatsApp Chats",
+        "modelDescription": "List WhatsApp conversations (direct chats and groups) with id, last message, unread count and last activity.",
+        "icon": "media/icon.svg",
+        "tags": [
+          "whatsapp",
+          "chats"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "number",
+              "description": "Maximum chats to return (default 50, max 200)"
+            }
+          }
+        }
+      },
+      {
+        "name": "threads_whatsapp_read_chat",
+        "displayName": "Read WhatsApp Chat",
+        "modelDescription": "Read stored messages from one WhatsApp conversation, oldest first, including sender names and quoted replies.",
+        "icon": "media/icon.svg",
+        "tags": [
+          "whatsapp",
+          "chats"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string",
+              "description": "Chat id from threads_whatsapp_list_chats or threads_whatsapp_groups"
+            },
+            "limit": {
+              "type": "number",
+              "description": "How many recent messages to return (default 50, max 120)"
+            }
+          },
+          "required": [
+            "chat_id"
+          ]
+        }
+      },
+      {
+        "name": "threads_whatsapp_search",
+        "displayName": "Search WhatsApp Messages",
+        "modelDescription": "Search stored WhatsApp messages for a piece of text.",
+        "icon": "media/icon.svg",
+        "tags": [
+          "whatsapp",
+          "search"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Text to look for, case-insensitive"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Maximum hits (default 50)"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "threads_whatsapp_groups",
+        "displayName": "List WhatsApp Groups",
+        "modelDescription": "List every WhatsApp group this account belongs to, with group id, subject and member count.",
+        "icon": "media/icon.svg",
+        "tags": [
+          "whatsapp",
+          "groups"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "compile": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "build": "npm run compile",
+    "watch": "npm run compile -- --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/vscode": "^1.96.0",
+    "esbuild": "^0.25",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@types/qrcode": "^1.5.6",
+    "baileys": "^7.0.0-rc14",
+    "qrcode": "^1.5.4"
+  }
+}

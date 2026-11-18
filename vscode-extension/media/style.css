@@ -1,0 +1,639 @@
+/* Threads sidebar — WhatsApp inbox styled with VS Code theme tokens. */
+
+:root {
+    --gap: 8px;
+    --radius: 10px;
+    --mine: rgba(37, 211, 102, 0.16);
+    --mine-border: rgba(37, 211, 102, 0.35);
+    --theirs: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.06));
+    --hover: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06));
+    --active: var(--vscode-list-activeSelectionBackground, rgba(255, 255, 255, 0.1));
+    --muted: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.55));
+    --border: var(--vscode-panel-border, rgba(255, 255, 255, 0.09));
+    --accent: var(--vscode-button-background, #0e639c);
+    --accent-fg: var(--vscode-button-foreground, #fff);
+    --danger: var(--vscode-errorForeground, #f48771);
+}
+
+body.vscode-light {
+    --mine: #d9fdd3;
+    --mine-border: #b9eeb0;
+    --theirs: #f2f2f2;
+    --muted: rgba(0, 0, 0, 0.55);
+    --border: rgba(0, 0, 0, 0.1);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+body {
+    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, sans-serif);
+    font-size: var(--vscode-font-size, 13px);
+    color: var(--vscode-foreground);
+    background: transparent;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    min-height: 0;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* ── banner (pairing, errors, empty inbox) ──────────────────────────────── */
+.banner {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--vscode-sideBar-background, transparent);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    text-align: center;
+}
+
+.banner-title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.banner-text {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--muted);
+    max-width: 32ch;
+}
+
+.qr {
+    width: 180px;
+    height: 180px;
+    margin: 4px 0;
+    image-rendering: pixelated;
+    background: #fff;
+    padding: 6px;
+    border-radius: 8px;
+}
+
+.hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.4;
+    max-width: 30ch;
+}
+
+.banner-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+/* ── buttons ────────────────────────────────────────────────────────────── */
+.btn {
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-family: inherit;
+    color: var(--accent-fg);
+    background: var(--accent);
+    cursor: pointer;
+}
+
+.btn:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder, #007fd4);
+    outline-offset: 1px;
+}
+
+.btn.ghost {
+    background: transparent;
+    color: var(--vscode-foreground);
+    border-color: var(--border);
+}
+
+.btn.ghost:hover {
+    background: var(--hover);
+}
+
+.icon-btn {
+    border: none;
+    background: transparent;
+    color: var(--vscode-foreground);
+    font-size: 16px;
+    line-height: 1;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.icon-btn:hover {
+    background: var(--hover);
+}
+
+/* ── chat list ──────────────────────────────────────────────────────────── */
+.list-pane {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+}
+
+.list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px 6px 12px;
+}
+
+.list-title {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.search-row {
+    padding: 6px 10px 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+#search {
+    width: 100%;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--vscode-input-background, rgba(255, 255, 255, 0.06));
+    color: var(--vscode-input-foreground, inherit);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+}
+
+#search:focus {
+    border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+.chat-list {
+    overflow-y: auto;
+    min-height: 0;
+    flex: 1;
+}
+
+.chat-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+}
+
+.chat-row:hover,
+.chat-row:focus-visible {
+    background: var(--hover);
+    outline: none;
+}
+
+.chat-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.chat-top,
+.chat-bottom {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+
+.chat-name {
+    font-weight: 600;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-time {
+    font-size: 10px;
+    color: var(--muted);
+    flex-shrink: 0;
+}
+
+.chat-preview {
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.badge {
+    flex-shrink: 0;
+    min-width: 18px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--vscode-badge-background, #4d4d4d);
+    color: var(--vscode-badge-foreground, #fff);
+    font-size: 10px;
+    font-weight: 600;
+    text-align: center;
+}
+
+.avatar {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #fff;
+    background: hsl(var(--hue, 150) 38% 38%);
+    text-transform: uppercase;
+}
+
+.empty {
+    padding: 16px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+/* ── conversation ───────────────────────────────────────────────────────── */
+.chat-view {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+}
+
+.chat-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--vscode-sideBar-background, transparent);
+}
+
+.chat-headings {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.chat-title {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-subtitle {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 10px 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-height: 0;
+}
+
+.day {
+    align-self: center;
+    margin: 8px 0 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--vscode-badge-background, rgba(255, 255, 255, 0.08));
+}
+
+.system {
+    align-self: center;
+    margin: 4px 0;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--theirs);
+    max-width: 80%;
+    text-align: center;
+}
+
+.row {
+    display: flex;
+    max-width: 100%;
+}
+
+.row.mine {
+    justify-content: flex-end;
+}
+
+.bubble {
+    position: relative;
+    max-width: 84%;
+    padding: 5px 8px 4px;
+    border-radius: var(--radius);
+    background: var(--theirs);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.row.mine .bubble {
+    background: var(--mine);
+    border: 1px solid var(--mine-border);
+}
+
+.bubble .sender {
+    font-size: 11px;
+    font-weight: 600;
+    color: hsl(var(--hue, 150) 55% 60%);
+}
+
+body.vscode-light .bubble .sender {
+    color: hsl(var(--hue, 150) 55% 32%);
+}
+
+.bubble .text {
+    white-space: pre-wrap;
+}
+
+.bubble .meta {
+    align-self: flex-end;
+    font-size: 10px;
+    color: var(--muted);
+    line-height: 1;
+}
+
+.bubble.system,
+.bubble.other {
+    font-style: italic;
+}
+
+
+
+.quote {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 3px 6px;
+    margin-bottom: 2px;
+    border-left: 2px solid var(--accent);
+    border-radius: 4px;
+    background: rgba(127, 127, 127, 0.14);
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.quote-sender {
+    font-weight: 600;
+    color: var(--vscode-foreground);
+}
+
+/* ── composer ───────────────────────────────────────────────────────────── */
+.composer {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
+}
+
+#msg-input {
+    flex: 1;
+    resize: none;
+    min-height: 28px;
+    max-height: 120px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--vscode-input-background, rgba(255, 255, 255, 0.06));
+    color: var(--vscode-input-foreground, inherit);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.35;
+    outline: none;
+}
+
+#msg-input:focus {
+    border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* ── status bar ─────────────────────────────────────────────────────────── */
+.status-bar {
+    flex-shrink: 0;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.status-bar.error {
+    color: var(--danger);
+}
+
+
+/* ── new chat ───────────────────────────────────────────────────────────── */
+.new-chat {
+    display: flex;
+    gap: 6px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.new-chat input {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--vscode-input-background, rgba(255, 255, 255, 0.06));
+    color: var(--vscode-input-foreground, inherit);
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+}
+
+.new-chat input:focus {
+    border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* ── message search results ─────────────────────────────────────────────── */
+.search-hits {
+    max-height: 45%;
+    overflow-y: auto;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--vscode-editorWidget-background, transparent);
+}
+
+.hits-label {
+    padding: 2px 12px 6px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+}
+
+.hit {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: 6px 12px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.hit:hover,
+.hit:focus-visible {
+    background: var(--hover);
+    outline: none;
+}
+
+.hit-meta {
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.hit-text {
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── archived toggle ────────────────────────────────────────────────────── */
+.archived-toggle {
+    flex-shrink: 0;
+    padding: 7px 12px;
+    border: none;
+    border-top: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 11px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.archived-toggle:hover {
+    background: var(--hover);
+    color: var(--vscode-foreground);
+}
+
+.muted-mark {
+    flex-shrink: 0;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+}
+
+/* ── delivery state ─────────────────────────────────────────────────────── */
+.bubble .meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.bubble .edited {
+    font-size: 10px;
+    color: var(--muted);
+}
+
+.tick {
+    font-size: 10px;
+    line-height: 1;
+    letter-spacing: -0.08em;
+    color: var(--muted);
+}
+
+.tick.read {
+    color: #53bdeb;
+}
+
+.tick.pending {
+    opacity: 0.6;
+}
+
+.tick.failed {
+    color: var(--danger);
+    font-weight: 700;
+    letter-spacing: 0;
+}
+
+.row.failed .bubble {
+    border-color: var(--danger);
+}
+
+.retry {
+    align-self: flex-end;
+    margin-top: 2px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--danger);
+    font-family: inherit;
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.retry:hover {
+    text-decoration: underline;
+}
+
+/* Groups and numbers get a slightly different avatar. */
+.avatar.group {
+    border-radius: 8px;
+}

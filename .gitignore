@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.vsix
+
+# Local scratch / probe files
+.probe/
+.preview/
+
+# Logs & OS junk
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor / env
+.env
+.env.*
+.vscode-test/
