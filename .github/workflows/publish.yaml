@@ -68,7 +68,28 @@ jobs:
           echo "ref             = $GITHUB_WORKFLOW_REF"
           echo "environment     = ${{ github.environment }}"
           echo "event           = ${{ github.event_name }}"
-          echo "publisher       = $(node -p "require('./vscode-extension/package.json').publisher")"
+          echo "publisher       = $(node -p "require('vscode-extension/package.json').publisher")"
+
+      - name: Refuse to republish a version that is already live
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://marketplace.visualstudio.com/items?itemName=akashdeepsingh.threads")
+          if [ "$CODE" = "200" ]; then
+            LIVE=$(curl -s \
+              "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json;api-version=7.2-preview.1" \
+              -d '{"filters":[{"criteria":[{"filterType":7,"value":"akashdeepsingh.threads"}]}],"flags":914}' \
+              | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{console.log(JSON.parse(s).results[0].extensions[0].versions[0].version)}catch{console.log('')}})")
+            if [ "$LIVE" = "$PKG" ]; then
+              echo "::error::version $PKG is already published. Bump package.json before publishing."
+              exit 1
+            fi
+            echo "Live version is $LIVE; publishing $PKG."
+          else
+            echo "Nothing published yet; publishing $PKG."
+          fi
 
       - name: Publish
         run: npx @vscode/vsce publish --oidc
