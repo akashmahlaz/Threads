@@ -4,6 +4,22 @@ All notable changes to Threads are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-11-18
+
+### Fixed
+
+- **Screenshots did not appear on the Marketplace listing.** The README linked
+  them with relative paths, which the Marketplace cannot resolve. They now use
+  absolute `raw.githubusercontent.com` URLs.
+- **The extension icon was 1254x1254 and 2.1 MB.** Resampled to the 128x128 the
+  Marketplace asks for, now 20 KB.
+
+### Changed
+
+- Pushing to `main` publishes automatically when `vscode-extension/**` changes.
+  The version must be bumped in `package.json` first; the workflow refuses to
+  republish a version that is already live.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added
@@ -82,6 +98,7 @@ All notable changes to Threads are documented here. The format follows
 - Chat list, conversation view, search, send, retry, archive and mute state.
 - Copilot tools: send, list chats, read chat, search, groups, status.
 
+[0.5.1]: https://github.com/akashmahlaz/Threads/releases/tag/v0.5.1
 [0.5.0]: https://github.com/akashmahlaz/Threads/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akashmahlaz/Threads/releases/tag/v0.4.1
 [0.4.0]: https://github.com/akashmahlaz/Threads/releases/tag/v0.4.0

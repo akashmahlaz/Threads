@@ -2,7 +2,7 @@
   "name": "threads",
   "displayName": "Threads",
   "description": "WhatsApp in your sidebar \u2014 chats, groups and contacts, with native Copilot tools",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "akashdeepsingh",
   "license": "MIT",
   "icon": "media/icon.png",

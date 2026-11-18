@@ -8,6 +8,11 @@ name: Publish to VS Code Marketplace
 # publish.yaml, environment Production. See https://aka.ms/vsm/trustedpublishing
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'vscode-extension/**'
+      - .github/workflows/publish.yaml
   release:
     types: [published]
   workflow_dispatch:
